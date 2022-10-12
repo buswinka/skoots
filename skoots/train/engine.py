@@ -5,7 +5,7 @@ from skoots.train.utils import sum_loss, show_box_pred
 from skoots.train.sigma import Sigma
 # from hcat.lib.functional import VectorToEmbedding, EmbeddingToProbability
 from skoots.lib.vector_to_embedding import VectorToEmbedding, _vec2emb
-from skoots.lib.embedding_to_prob import EmbeddingToProbability
+from skoots.lib.embedding_to_prob import baked_embed_to_prob
 
 from skoots.train.utils import mask_overlay, write_progress
 
@@ -62,7 +62,7 @@ def engine(
     n = 1
     num = torch.tensor(vector_scale, device=device)
 
-    embedding_to_probability = EmbeddingToProbability().train()
+    # embedding_to_probability = EmbeddingToProbability().train()
 
     optimizer = optimizer(model.parameters(), lr=lr, weight_decay=wd)
     scheduler = scheduler(optimizer)
@@ -94,7 +94,7 @@ def engine(
             predicted_skeleton: Tensor = out[:, [-2], ...]
 
             embedding: Tensor = _vec2emb(num, vector, n=n)
-            out: Tensor = embedding_to_probability(embedding, baked, sigma(0), baked=True)
+            out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
             _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
@@ -132,7 +132,7 @@ def engine(
                 predicted_skeleton: Tensor = out[:, [-2], ...]
 
                 embedding: Tensor = _vec2emb(num, vector, n=n)
-                out: Tensor = embedding_to_probability(embedding, baked, sigma(e), baked=True)
+                out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                 _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())

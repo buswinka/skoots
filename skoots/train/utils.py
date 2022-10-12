@@ -1,6 +1,6 @@
 import torch
 import torch.nn.modules.batchnorm
-import hcat.lib.utils
+import skoots.lib.utils
 from torch import Tensor
 from typing import Dict, Optional, Union, List
 import matplotlib.pyplot as plt

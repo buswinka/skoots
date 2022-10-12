@@ -3,7 +3,7 @@ from torch import Tensor
 import torchvision.transforms.functional as ttf
 from torchvision.ops import box_convert
 from typing import Dict, Tuple, Union, Sequence, List, Callable, Optional
-from hcat.train.erosion import binary_erosion
+from skoots.lib.morphology import binary_erosion
 import math
 import random
 from tqdm import tqdm

@@ -6,6 +6,8 @@ from skoots.train.dataloader import dataset, MultiDataset, skeleton_colate
 from skoots.train.sigma import Sigma
 from skoots.train.loss import tversky
 from skoots.train.merged_transform import merged_transform_3D, background_transform_3D
+from skoots.train.engine import engine
+
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -13,7 +15,6 @@ from skoots.train.setup import setup_process, cleanup, find_free_port
 import torch.multiprocessing as mp
 import torch.nn as nn
 
-from engine import engine
 
 torch.manual_seed(0)
 

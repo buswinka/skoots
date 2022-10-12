@@ -7,7 +7,7 @@ import os.path
 import skimage.io as io
 from typing import Dict, List, Union
 from torch.utils.data import Dataset
-from hcat.train.merged_transform import get_centroids
+from skoots.train.merged_transform import get_centroids
 from tqdm import tqdm
 from typing import Tuple, Callable, List, Union, Optional
 

@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from hcat.lib.utils import _crop
+from skoots.lib.utils import _crop3d as _crop
 import torch.nn as nn
 
 from typing import Tuple, Dict, Optional, List
@@ -222,48 +222,59 @@ class VectorToEmbedding:
     def __repr__(self):
         return f'nn.Module[name=VectorToEmbedding, scale={self.scale}]'
 
+#
+# def _vec2emb(scale: Tensor, vector: Tensor) -> Tensor:
+#     if vector.ndim != 5: raise RuntimeError('Expected input tensor ndim == 5')
+#
+#     num: Tensor = torch.clone(scale.float())
+#
+#     with torch.no_grad():
+#         _x = torch.linspace(0, vector.shape[2] - 1, vector.shape[2], device=vector.device)
+#         _y = torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device)
+#         _z = torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device)
+#
+#         xv, yv, zv = torch.meshgrid([_x, _y, _z])
+#
+#         mesh = torch.cat((xv.unsqueeze(0).unsqueeze(0),
+#                           yv.unsqueeze(0).unsqueeze(0),
+#                           zv.unsqueeze(0).unsqueeze(0)), dim=1)
+#
+#     # Apply the mesh grid to the vector! We always do this at least once!
+#     vector = vector.mul(num.view(1, 3, 1, 1, 1))
+#     mesh = mesh + vector
+#
+#     return mesh
 
-def _vec2emb(scale: Tensor, vector: Tensor, n: int) -> Tensor:
-    if vector.ndim != 5: raise RuntimeError('Expected input tensor ndim == 5')
+@torch.jit.ignore
+def _vec2emb(scale: Tensor, vector: Tensor):
+    """
+    2D or 3D vector to embedding
+
+    Could be a faster way to do this with strides but idk...
+
+    :param scale: [N=2/3]
+    :param vector: [B, C, X, Y, Z?]
+    :return:
+    """
+    assert scale.shape[0] == vector.shape[1], f'Cannot use {scale.shape[0]}D scale with vector shape: {vector.shape}'
+    assert scale.shape[0] == vector.ndim-2, f'Cannot use {scale.shape[0]}D scale with {vector.ndim - 2}D vector shape [B, C, ...]: {vector.shape}'
 
     num: Tensor = torch.clone(scale.float())
 
-    with torch.no_grad():
-        _x = torch.linspace(0, vector.shape[2] - 1, vector.shape[2], device=vector.device)
-        _y = torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device)
-        _z = torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device)
+    newshape: Tuple[int] = tuple([1, scale.shape[0]] + [1,] * (vector.ndim - 2))
 
-        xv, yv, zv = torch.meshgrid([_x, _y, _z])
+    axis_ind: List[Tensor] = []
+    for i in range(vector.ndim - 2):
+        axis_ind.append(
+            torch.linspace(0, vector.shape[2 + i] - 1, vector.shape[2 + i], device=vector.device)
+        )
 
-        mesh = torch.cat((xv.unsqueeze(0).unsqueeze(0),
-                          yv.unsqueeze(0).unsqueeze(0),
-                          zv.unsqueeze(0).unsqueeze(0)), dim=1)
+    mesh = torch.meshgrid(axis_ind, indexing='ij')
+    mesh = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
+    mesh = torch.cat(mesh, dim=1)
 
-    # Apply the mesh grid to the vector! We always do this at least once!
-    vector = vector.mul(num.view(1, 3, 1, 1, 1))
-    mesh = mesh + vector
+    vector = vector.mul(num.view(newshape))
 
-    # for _ in range(n - 1):  # Only executes if n > 1
-    #     # pass
-    #     index = torch.clone(mesh.round())
-    #     b, c, x, y, z = index.shape
-    #
-    #     index[:, 0, ...] = torch.clamp(index[:, 0, ...], 0, x)
-    #     index[:, 1, ...] = torch.clamp(index[:, 1, ...], 0, y)
-    #     index[:, 2, ...] = torch.clamp(index[:, 2, ...], 0, z)
+    return mesh + vector
 
-        # for i, k in enumerate([x, y, z]):
-        #     index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
-        #
-        # index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
-        # out_of_bounds = torch.logical_and(index > x * y * z - 1, index < 0)
-        # index[out_of_bounds] = 0
-        #
-        # index = index.clamp(0, x * y * z - 1).long()
-        # mesh = mesh + vector.flatten(start_dim=2)[]
-        # for i, shape in enumerate((x, y, z)):
-        #     mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
-        #     out_of_bounds = torch.logical_or(mesh[:, [i], ...] > shape, mesh < 0)
-        #     mesh[out_of_bounds] = -1
 
-    return mesh

@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional, List, Union
 
-from hcat.lib.utils import crop_to_identical_size
+from skoots.lib.utils import crop_to_identical_size
 
 
 class jaccard(nn.Module):
