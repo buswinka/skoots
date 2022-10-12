@@ -4,7 +4,7 @@ import skimage.io as io
 from skoots.train.utils import sum_loss, show_box_pred
 from skoots.train.sigma import Sigma
 # from hcat.lib.functional import VectorToEmbedding, EmbeddingToProbability
-from skoots.lib.vector_to_embedding import VectorToEmbedding, _vec2emb
+from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.lib.embedding_to_prob import baked_embed_to_prob
 
 from skoots.train.utils import mask_overlay, write_progress
@@ -93,7 +93,7 @@ def engine(
             vector: Tensor = out[:, 0:3:1, ...]
             predicted_skeleton: Tensor = out[:, [-2], ...]
 
-            embedding: Tensor = _vec2emb(num, vector, n=n)
+            embedding: Tensor = vector_to_embedding(num, vector)
             out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
             _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
@@ -131,7 +131,7 @@ def engine(
                 vector: Tensor = out[:, 0:3:1, ...]
                 predicted_skeleton: Tensor = out[:, [-2], ...]
 
-                embedding: Tensor = _vec2emb(num, vector, n=n)
+                embedding: Tensor = vector_to_embedding(num, vector)
                 out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                 _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
