@@ -3,7 +3,6 @@ import numpy as np
 import skimage.io as io
 from skoots.train.utils import sum_loss, show_box_pred
 from skoots.train.sigma import Sigma
-# from hcat.lib.functional import VectorToEmbedding, EmbeddingToProbability
 from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.lib.embedding_to_prob import baked_embed_to_prob
 
@@ -51,6 +50,7 @@ def engine(
         distributed=True,
         mixed_precision=False,
         force=False) -> Tuple[OrderedDict, OrderedDict, List[float]]:
+
     if verbose and rank == 0:
         print('Initiating Training Run', flush=False)
         vars = locals()
@@ -59,10 +59,7 @@ def engine(
                 print(f'\t> {k}: {vars[k]}', flush=False)
         print('', flush=True)
 
-    n = 1
     num = torch.tensor(vector_scale, device=device)
-
-    # embedding_to_probability = EmbeddingToProbability().train()
 
     optimizer = optimizer(model.parameters(), lr=lr, weight_decay=wd)
     scheduler = scheduler(optimizer)
@@ -96,7 +93,7 @@ def engine(
             embedding: Tensor = vector_to_embedding(num, vector)
             out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
-            _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
+            _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
             _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float())
             loss = _loss_embed + (1 * _loss_prob) + (1 * _loss_skeleton)
@@ -134,7 +131,7 @@ def engine(
                 embedding: Tensor = vector_to_embedding(num, vector)
                 out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
-                _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 3, X, Y, Z]
+                _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
                 _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float())
                 loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 500 else 0) * _loss_skeleton)

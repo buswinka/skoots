@@ -572,7 +572,6 @@ def background_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] 
     return data_dict
 
 
-
 # @torch.jit.script
 def get_centroids(masks: Tensor) -> Tensor:
     masks = masks.squeeze(0) if masks.shape[0] == 1 else masks
@@ -599,7 +598,7 @@ if __name__ == '__main__':
     import tqdm
     import torch.distributed as dist
     import torch.optim.lr_scheduler
-    from hcat.train.dataloader import dataset, colate, MultiDataset
+    from skoots.train.dataloader import dataset, colate, MultiDataset
 
     from torch.utils.data import DataLoader
 

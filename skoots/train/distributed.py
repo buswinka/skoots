@@ -56,10 +56,10 @@ def train(rank: str,
     torch.autograd.profiler.emit_nvtx(enabled=False)
     torch.autograd.set_detect_anomaly(False)
 
-    checkpoint = torch.load(
-        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Aug26_20-17-17_CHRISUBUNTU.trch')
+    # checkpoint = torch.load(
+    #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Aug26_20-17-17_CHRISUBUNTU.trch')
 
-    state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
+    # state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
 
     initial_sigma = torch.tensor([20., 20., 2.], device=device)

@@ -1,15 +1,12 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-import skimage.io as io
-import matplotlib.pyplot as plt
+
 from skimage.morphology import skeletonize, binary_erosion
 
 from tqdm import tqdm, trange
 from typing import Optional, Tuple, Dict
 
-import numpy as np
-import glob
 
 def save_train_test_split(mask: Tensor, skeleton: Dict[int, Tensor], z_split: int, base: str):
     """
@@ -71,11 +68,12 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
     :return: Dict[int, Tensor] dict of masks where int is the object id and Tensor is [3, K] skeletons
     """
 
-
     unique = torch.unique(mask)
 
+    x, y, z = mask.shape
+
     large_mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
-                               size=torch.tensor([x, y, z]).mul(SCALE).float().round().int().tolist(),
+                               size=torch.tensor([x, y, z]).mul(scale).float().round().int().tolist(),
                                mode='nearest').squeeze().cuda().int()
 
     assert torch.allclose(unique.cuda(), torch.unique(large_mask))
@@ -129,8 +127,15 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
         assert output[int(id)].shape[0] > 0 and output[
             int(id)].ndim > 1, f'{temp.nonzero().shape=}, {lower=} {id}, {output[int(id)].shape}'
 
+    return output
+
 
 if __name__ == '__main__':
+    import skimage.io as io
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import glob
+
     """
     The move -> Calculate the skeleton of each instance and save it as a tensor of nonzero indicies
     For each pixel in the instance mask, we now need to calculate which skeleton point we need to point to
