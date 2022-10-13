@@ -24,8 +24,6 @@ def save_train_test_split(mask: Tensor, skeleton: Dict[int, Tensor], z_split: in
     """
 
 
-    assert 486 in skeleton, f'Not in at the start'
-
     # train
     _mask = mask[..., 0:z_split+1:]
 

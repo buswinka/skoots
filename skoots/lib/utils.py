@@ -110,8 +110,8 @@ def _crop2d(img: Tensor, x: int, y: int, w: int, h: int) -> Tensor:
     :param d: depth of crop box
     :return:
     """
-    return img[..., x:x + w, y:y + h]
 
+    return img[..., x:x + w, y:y + h]
 
 @torch.jit.script
 def crop_to_identical_size(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
@@ -128,6 +128,7 @@ def crop_to_identical_size(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
     a = _crop3d(a, x=0, y=0, z=0, w=b.shape[-3], h=b.shape[-2], d=b.shape[-1])
     b = _crop3d(b, x=0, y=0, z=0, w=a.shape[-3], h=a.shape[-2], d=a.shape[-1])
     return a, b
+
 
 @torch.jit.script
 def cantor2(a: Tensor, b: Tensor) -> Tensor:

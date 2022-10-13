@@ -180,8 +180,8 @@ def engine(
                         predicted_skeleton: Tensor = out[:, [-2], ...]
                         vector: Tensor = out[:, 0:3:1, ...]
 
-                        embedding: Tensor = _vec2emb(num, vector, n=n)
-                        out: Tensor = embedding_to_probability(embedding, baked, sigma(e), baked=True)
+                        embedding: Tensor = vector_to_embedding(num, vector)
+                        out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                         _loss_embed = loss_embed(out, masks.gt(0).float())
                         _loss_prob = loss_prob(probability_map, masks.gt(0).float())
