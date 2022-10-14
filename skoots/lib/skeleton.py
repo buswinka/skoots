@@ -57,7 +57,7 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
     :param skeletons: Dict of skeleton indicies where each key is a unique instance of an object in mask.
         - Each skeleton has a shape [3, N] where N is the number of pixels constituting the skeleton
     :param anisotropy: Anisotropic correction factor for min distance calculation
-    :param device: torch.device by which to run calculations
+    :param device: torch.Device by which to run calculations
 
     :return: Baked skeleton
     """

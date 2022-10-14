@@ -5,7 +5,7 @@ from typing import Dict, List
 
 class Sigma:
     """ an adjustable sigma parameter for training. """
-    def __init__(self, adjustments: List[Dict[str, float]], initial_sigma = [0.1, 0.1, 0.8], device='cpu'):
+    def __init__(self, adjustments: List[Dict[str, float]], initial_sigma: List[float] = [0.1, 0.1, 0.8], device='cpu'):
         """
         Creates an object which inputs an epoch, and returns a torch.tensor of [sigma_x, sigma_y, sigma_z]
 
@@ -15,10 +15,8 @@ class Sigma:
         """
         self.adjutments = adjustments
         self.device = device
-        if isinstance(initial_sigma, list):
-            self.initial_sigma = torch.tensor(initial_sigma, device=device)
-        else:
-            self.initial_sigma = initial_sigma
+
+        self.initial_sigma = torch.tensor(initial_sigma, device=device) if isinstance(initial_sigma, list) else initial_sigma
 
         values = [1]  # Initial values set so sigma isnt zero at 3 zero
         epochs = [-1]

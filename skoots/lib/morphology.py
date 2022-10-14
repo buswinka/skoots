@@ -13,10 +13,10 @@ def _compute_zero_padding(kernel_size: Tuple[int, int, int]) -> Tuple[int, int, 
 
 @torch.jit.script
 def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
-    r"""Creates a symetric binary kernel to extract the patches. If the window size
+    r"""Creates a symmetric binary kernel to extract the patches. If the window size
     is HxWxD will create a (H*W)xHxW kernel.
 
-    Adapted from Kornia
+    Adapted from a 2D Kornia implementation
 
     """
     window_range: int = int(window_size ** 3)

@@ -7,10 +7,13 @@ def crops(image: Tensor,
           cropsize: List[int],
           overlap: Optional[List[int]] = [0, 0, 0]) -> Tuple[Tensor, List[int]]:
     """
-    Takes an image and sends out crops of a certain size with overlap pixels
+    Generator which takes an image and sends out crops of a certain size with overlap pixels
 
+    :param image: 4D torch.Tensor of shape [C, X, Y, Z]
+    :param cropsize: Spatial dims of the resulting crops [X, Y, Z]
+    :param overlap: Overlap between each crop
+    :return: Crop of the image, and the indicies of the crop
     """
-
 
 
     image_shape = image.shape  # C, X, Y, Z
