@@ -181,7 +181,7 @@ class split(nn.Module):
             where :math:`s` is the ground truth skeleton, and :math:`p` is the predicted skeleton where
 
         .. math::
-            L(s, p) = E(p)^{A\Phi(s)} - 1
+            L(s, p) = E(p)^{ \alpha \Phi(s)} - 1
 
 
         :param n_iter: Number of times to perform erosion for distance calculation.
@@ -203,6 +203,7 @@ class split(nn.Module):
             distance = distance + gt   # psuedo distance function...
 
         distance = distance.div(self.n)
+        assert distance.max() <= 1
 
         pred = pred.sub(binary_erosion(pred)) \
                    .mul(2)  # cheeky edge detection function

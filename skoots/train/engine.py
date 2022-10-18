@@ -1,6 +1,7 @@
 import os.path
 import numpy as np
 import skimage.io as io
+import skoots.train.loss
 from skoots.train.utils import sum_loss, show_box_pred
 from skoots.train.sigma import Sigma
 from skoots.lib.vector_to_embedding import vector_to_embedding
@@ -75,6 +76,8 @@ def engine(
     avg_val_prob_loss = []
     avg_val_skele_loss = []
 
+    skel_crossover_loss = skoots.train.loss.split(n_iter=3, alpha=2)
+
 
     # Warmup...
     for images, masks, skeleton, skele_masks, baked in train_data:
@@ -95,7 +98,7 @@ def engine(
 
             _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float())
+            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
             loss = _loss_embed + (1 * _loss_prob) + (1 * _loss_skeleton)
 
             warmup_range.desc = f'{loss.item()}'
@@ -133,7 +136,10 @@ def engine(
 
                 _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float())
+                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+
+                print(_loss_skeleton)
+
                 loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 500 else 0) * _loss_skeleton)
 
                 if torch.isnan(loss):
