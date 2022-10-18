@@ -4,6 +4,7 @@ from torch import Tensor
 from typing import Optional, List, Union
 
 from skoots.lib.utils import crop_to_identical_size
+from skoots.lib.morphology import binary_erosion
 
 
 class jaccard(nn.Module):
@@ -163,8 +164,63 @@ class tversky(nn.Module):
         return f'LossFn[name=tversky, alpha={self.alpha.item()}, beta={self.beta.item()}, eps={self.eps.item()}'
 
 
-if __name__ == '__main__':
-    lossfn = torch.jit.script(tversky(0.5, 0.5, eps=1e-8, device='cuda'))
+class split(nn.Module):
+    def __init__(self, n_iter: int = 2, alpha: float = 2.0, device: str = 'cpu'):
+        """
+        The "oh shit my skeletons have split" loss. This basically checks if an edge has crossed the middle
+        of a GT object. If it does, it applies a crazy loss.
 
-    predicted = [torch.rand((10, 200, 200, 20), device='cuda') for _ in range(10)]
-    gt = torch.rand((10, 1, 200, 200, 20), device='cuda').mul(10).round().float()
+        Approximates the distance function by just eroding and adding a bunch.
+        Approximates the edge function by subtracting the prediction by the eroded
+
+        For speed, will only check for pixels :math:`n_{iter}` away. So if :math:`n_{iter} = 3' the maximum distance
+        any pixel might be from an edge would be 3.
+
+        Formally:
+            if :math:`E` is the edge function and :math:`\Phi` is the distance function, we compute the loss :math:`L(s, p)`
+            where :math:`s` is the ground truth skeleton, and :math:`p` is the predicted skeleton where
+
+        .. math::
+            L(s, p) = E(p)^{A\Phi(s)} - 1
+
+
+        :param n_iter: Number of times to perform erosion for distance calculation.
+        :param alpha: Scale factor for exponential loss. Large values penalize breakages more.
+        :param device: a torch.device - 'cuda' or 'cpu'
+        """
+
+        super(split, self).__init__()
+        self.n = n_iter
+        self._device = device
+        self.a = torch.tensor(alpha, device=device)
+
+    def forward(self, pred, gt):
+        distance = torch.zeros_like(gt) + gt
+
+        for _ in range(self.n):
+            print("yeet")
+            gt = binary_erosion(gt)
+            distance = distance + gt   # psuedo distance function...
+
+        distance = distance.div(self.n)
+
+        pred = pred.sub(binary_erosion(pred)) \
+                   .mul(2)  # cheeky edge detection function
+
+        return self._split_loss(edges=pred, distance=distance, a=self.a).mean()
+
+    @staticmethod
+    @torch.jit.script
+    def _split_loss(edges: Tensor, distance: Tensor, a: Tensor):
+        return torch.pow(edges, a * distance)
+
+
+if __name__ == '__main__':
+    lossfn = torch.jit.script(split(2, 1.5, device='cpu'))
+    print(lossfn)
+
+    predicted = torch.rand((1, 1, 20, 20, 10), device='cpu')
+    gt = torch.rand((1, 1, 20, 20, 10), device='cpu').mul(10).round().float()
+
+    a = lossfn(predicted, gt)
+    print(a)
