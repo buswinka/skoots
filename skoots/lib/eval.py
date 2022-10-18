@@ -17,6 +17,16 @@ import glob
 import numpy as np
 from torch import Tensor
 
+"""
+Instance Segmentation more or less...
+---------------------
+    vectors, skeletons, masks = model(image)
+    instance_skeletons = efficient_flood_fill(skeletons)
+    for id in instance_skeletons.unique():
+        instance_mask = get_instance(mask, vectors, instance_skeletons)
+
+"""
+
 
 # image_path = '/home/chris/Documents/threeOHC_registered-scaled.tif'
 # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure 1 - overview/data/single_mito.tif'

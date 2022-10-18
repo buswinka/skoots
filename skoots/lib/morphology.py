@@ -35,7 +35,12 @@ def binary_erosion(image: Tensor) -> Tensor:
     """
     Performs binary erosion on a 5D Tensor.
 
-    :param image: torch.Tensor[B, C, X, Y, Z]
+    Shapes:
+        - input: :math:`(B, C, X, Y, Z)`
+        - output: :math:`(C, C, X, Y, Z)`
+
+
+    :param image: binary image
     :return: eroded image
     """
     device = str(image.device)
@@ -53,7 +58,11 @@ def binary_dilation(image: Tensor) -> Tensor:
     """
     Performs binary dilation on a 5D Tensor.
 
-    :param image: torch.Tensor[B, C, X, Y, Z]
+    Shapes:
+        - input: :math:`(B, C, X, Y, Z)`
+        - output: :math:`(C, C, X, Y, Z)`
+
+    :param image: binary image
     :return: dilated image
     """
     padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))

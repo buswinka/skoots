@@ -91,10 +91,6 @@ def vector_to_embedding(scale: Tensor, vector: Tensor) -> Tensor:
 
             \phi_{i,j,k} = v_{i,j,k} * s + [i, j, k]
 
-    .. code-block::
-        scale = torch.tensor([30., 30., 10.])
-        vector = torch.rand((1,3,300,300,20)) # From Model
-        embedding = vector_to_embedding(scale, vector)
 
     Shapes:
         - scale: :math:`(2)` or :math:`(3)`
@@ -102,7 +98,7 @@ def vector_to_embedding(scale: Tensor, vector: Tensor) -> Tensor:
         - Returns: :math:`(B_{in}, 2, X_{in}, Y_{in})` or :math:`(B_{in}, 3, X_{in}, Y_{in}, Z_{in})`
 
 
-    :param scale: Vector scaling factors
+    :param scale: Scaling factors for each vector spatial dimension
     :param vector: Vector field predicted by a neural network
 
     :return: Pixel spatial embeddings

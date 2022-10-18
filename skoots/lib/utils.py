@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 from typing import List, Tuple, Optional, Union, Dict
+from numbers import Number
 import numpy as np
 
 
@@ -12,6 +13,8 @@ def calculate_indexes(pad_size: int, eval_image_size: int,
     Unet needs padding on each side of the evaluation to ensure only full convolutions are used
     in generation of the final mask. If the algorithm cannot evenly create indexes for
     padded_image_shape, an additional index is added at the end of equal size.
+
+
 
     :param pad_size: int corresponding to the amount of padding on each side of the
                      padded image
@@ -54,9 +57,18 @@ def calculate_indexes(pad_size: int, eval_image_size: int,
         ind.append([z1, z2])
     return ind
 
+def get_dtype_offset(dtype: str = 'uint16',
+                     image_max: Optional[Number] = None) -> int:
+    """
+    Returns the scaling factor such that
+    such that :math:`\frac{image}{f} \in [0, ..., 1]`
 
-def get_dtype_offset(dtype: str = 'uint16', image_max=None) -> int:
-    """ get dtype from string """
+    Supports: uint16, uint8, uint12, float64
+
+    :param dtype: String representation of the data type.
+    :param image_max: Returns image max if the dtype is not supported.
+    :return: Integer scale factor
+    """
 
     encoding = {
         'uint16': 2 ** 16,
@@ -149,6 +161,7 @@ def identical_rows(a: Tensor, b: Tensor) -> Tensor:
 
     :param a: [N, 3] torch.Tensor
     :param b: [N, 3] torch.Tensor
+
     :return: Indicies of identical rows
     """
     a = cantor3(a[:, 0], a[:, 1], a[:, 2])

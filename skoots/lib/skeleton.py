@@ -8,24 +8,27 @@ from skoots.lib.morphology import _compute_zero_padding, _get_binary_kernel3d
 
 
 @torch.jit.script
-def average_baked_skeletons(input: Tensor) -> Tensor:
+def average_baked_skeletons(baked_skeleton: Tensor, kernel_size: int = 3) -> Tensor:
     """
     Takes a baked skeleton computed by skoots.lib.skeleton.bake_skeleton and averages all the values such that
     there is a smooth transition from one location to another.
 
-    :param input: [1, 3, X, Y, Z]
-    :return: smoothed skeleton [1, 3, X, Y, Z]
+    Shapes:
+        - baked_skeleton :math:`(B_{in}, 3, X_{in}, Y_{in}, Z_{in})`
+        - returns :math:`(B_{in}, 3, X_{in}, Y_{in}, Z_{in})`
+
+    :param baked_skeleton: Baked skeleton tensor
+    :param kernel_size: Kernel size for smoothing
+    :return: smoothed skeleton: Smoothed Tensor
     """
-    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
-    kernel: Tensor = _get_binary_kernel3d(3, str(input.device))
-    b, c, h, w, d = input.shape
+    padding: Tuple[int, int, int] = _compute_zero_padding((kernel_size,) * 3)
+    kernel: Tensor = _get_binary_kernel3d(kernel_size, str(baked_skeleton.device))
+    b, c, h, w, d = baked_skeleton.shape
 
     # map the local window to single vector
-    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
+    features: Tensor = F.conv3d(baked_skeleton.reshape(b * c, 1, h, w, d), kernel,
                                 padding=padding, stride=1)
     features: Tensor = features.view(b, c, -1, h, w, d)  # B, C, -1, X, Y, Z
-
-    # print(features.shape)
 
     nonzero = features.gt(0).sum(2)  # B, C, X, Y, Z
     nonzero[nonzero.eq(0)] = 1.
@@ -40,18 +43,21 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
                   anisotropy: List[float] = (1., 1., 3.),
                   device: str = 'cpu') -> Tensor:
     """
-    For each pixel (p) index {x,y,z} in masks with shape [1, X, Y, Z], returns a new tensor [3, X, Y, Z] where
-    the value at each {X, Y, Z} is the closest skeleton point (s) of any instance.
+    For each pixel :math:`p_ik` of object :math:`k` at index :math:`i\in[x,y,z]` in masks, returns a baked_skeleton tensor where
+    the value at each index is the closest skeleton point :math:`s_{jk}` of any instance :math:`k`.
+
+    Formally, the value at each position :math:`i\in[x,y,z]` of the baked skeleton tensor :math:`S` is the minimum of the
+    euclidean distance function :math:`f(a, b)` and the skeleton point of any instance:
 
     .. math::
-        p_{xyz} = min(\ \Phi(s_{xyz},  \{x, y, z\})\ )\ for\ x,y,z \in\ mask.shape
+        S_{i} = min\left( f(i, s_{k}) \right) for k \in [1, 2, ..., N]
 
-    where
 
-    .. math::
-        \Phi(a,\ b)
-    is the euclidean distance function.
-
+    Shapes:
+        - masks: :math:`(1, X_{in}, Y_{in}, Z_{in})`
+        - skeletons: :math:`(3, N_i)`
+        - anisotropy: :math:`(3)`
+        - returns: :math:`(3, X_{in}, Y_{in}, Z_{in})`
 
     :param masks: Ground Truth instance mask of shape [1, X, Y, Z] of objects where each pixel is an integer id value.
     :param skeletons: Dict of skeleton indicies where each key is a unique instance of an object in mask.
@@ -62,21 +68,20 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
     :return: Baked skeleton
     """
 
-
-
     baked = torch.zeros((3, masks.shape[1], masks.shape[2], masks.shape[3]), device=device)
     unique = torch.unique(masks)
 
     anisotropy = torch.tensor(anisotropy, device=device).view(1, 1, 3)
 
     for id in unique[unique != 0]:
-        if id == 0: continue
 
         nonzero: Tensor = masks[0, ...].eq(id).nonzero().unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
         skel: Tensor = skeletons[int(id)].unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
 
-        ind = torch.cdist(skel, nonzero).squeeze(0).argmin(dim=0)
+        # Calculate the distance between the skeleton of object 'id'
+        # and all nonzero pixels of the binary mask of instance 'id'
+        ind: Tensor = torch.cdist(skel, nonzero).squeeze(0).argmin(dim=0)
 
         baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skel[ind, :].float().T
 
-    return average_baked_skeletons(baked.unsqueeze(0)).squeeze(0)  # requires batching...
+    return average_baked_skeletons(baked.unsqueeze(0)).squeeze(0)  # average_baked_skeletons requires a batch dim
