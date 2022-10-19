@@ -4,9 +4,12 @@ from skimage.morphology import flood_fill
 from tqdm import tqdm
 from typing import Tuple, Optional, Union, Dict
 
+from skimage.morphology import skeletonize as sk_skeletonize
+
 
 def efficient_flood_fill(skeleton: Tensor,
                          min_skeleton_size: Optional[int] = 100,
+                         skeletonize: bool = False,
                          device: Optional[Union[str, torch.device]] = 'cpu') -> Tuple[Tensor, Dict[int, Tensor]]:
     """
     get a
@@ -56,7 +59,17 @@ def efficient_flood_fill(skeleton: Tensor,
         ind = crop == id
         if ind.nonzero().shape[0] > min_skeleton_size:
             skeleton[x0:x1, y0:y1, z0:z1][ind] = crop[ind].to(skeleton.device)
-            skeleton_dict[id] = torch.nonzero(ind) + torch.tensor([x0, y0, z0], device=device)  # [N, 3]
+
+            # Experimental
+            if skeletonize:
+                scale_factor = 2
+                a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
+                _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
+
+            else:
+                _skeleton = torch.nonzero(ind)
+
+            skeleton_dict[id] = _skeleton.to(device) + torch.tensor([x0, y0, z0], device=device)  # [N, 3]
 
         else:
             skeleton[x0:x1, y0:y1, z0:z1][ind] = 0.  # crop[crop == id]

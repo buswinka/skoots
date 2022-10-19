@@ -62,7 +62,7 @@ def train(rank: str,
     # state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
 
-    initial_sigma = torch.tensor([20., 20., 2.], device=device)
+    initial_sigma = torch.tensor([20., 20., 6.], device=device)
     a = {'multiplier': 0.66, 'epoch': 200}
     b = {'multiplier': 0.66, 'epoch': 800}
     c = {'multiplier': 0.66, 'epoch': 1500}

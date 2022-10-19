@@ -7,6 +7,7 @@ from typing import List, Tuple, Dict, Optional
 from skoots.lib.morphology import _compute_zero_padding, _get_binary_kernel3d
 
 
+
 @torch.jit.script
 def average_baked_skeletons(baked_skeleton: Tensor, kernel_size: int = 3) -> Tensor:
     """
@@ -71,8 +72,6 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
 
     baked = torch.zeros((3, masks.shape[1], masks.shape[2], masks.shape[3]), device=device)
 
-    print(baked.shape)
-
     unique = torch.unique(masks)
 
     anisotropy = torch.tensor(anisotropy, device=device).view(1, 1, 3)
@@ -80,7 +79,7 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
     for id in unique[unique != 0]:
 
         nonzero: Tensor = masks[0, ...].eq(id).nonzero().unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
-        skel: Tensor = skeletons[int(id)].unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
+        skel: Tensor = skeletons[int(id)].to(device).unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
 
         # Calculate the distance between the skeleton of object 'id'
         # and all nonzero pixels of the binary mask of instance 'id'

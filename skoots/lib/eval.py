@@ -5,6 +5,7 @@ from skoots.lib.embedding_to_prob import baked_embed_to_prob
 from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.lib.flood_fill import efficient_flood_fill
 from skoots.lib.cropper import crops
+from skoots.lib.skeleton import bake_skeleton
 from skoots.lib.morphology import binary_erosion, binary_dilation
 
 import skimage.io as io
@@ -15,6 +16,14 @@ from torch import Tensor
 from bism.models import get_constructor
 from bism.models.spatial_embedding import SpatialEmbedding
 from torch.cuda.amp import GradScaler, autocast
+
+import warnings
+
+warnings.filterwarnings("ignore")
+
+import matplotlib.pyplot as plt
+
+from skimage.morphology import skeletonize
 
 """
 Instance Segmentation more or less...
@@ -34,16 +43,23 @@ Instance Segmentation more or less...
 
 @torch.no_grad()
 def get_instance(mask: Tensor,
-                 vectors: Tensor, # [3, N]
+                 vectors: Tensor,
                  skeleton: Tensor,
                  id: int,
                  num: Tensor,
                  thr: float = 0.5,
+                 sigma: Tensor = torch.tensor((10, 10, 3)),
                  min_instance_volume: int = 183) -> Tensor:
     """
     Gets an instance mask of a single object associated with identified Skeleton
 
-    :param mask: Semantic mask with shape [X, Y, Z]
+
+    Shapes:
+        - mask: :math:`(1, X_{in}, Y_{in}, Z_{in})`
+        - vectors: :math:`(3, X_{in}, Y_{in}, Z_{in})`
+        - skeleton: :math:`(3, N_{j})`
+
+    :param mask: empty mask by which to store all instances
     :param vectors: Embedding Vectors predicted by a neural network with shape [C=3, X, Y, Z]
     :param skeleton: Tensor of pixels representing the skeleton of an instance with shape [C=3, N] from *efficient_flood_fill*
     :param id: ID value of skeleton of interest
@@ -55,7 +71,7 @@ def get_instance(mask: Tensor,
     """
 
     # Establish min and max indicies
-    buffer = torch.tensor([100, 100, 10], device=skeleton.device)  # on all sides of the skeleton
+    buffer = torch.tensor([50, 50, 10], device=skeleton.device)  # on all sides of the skeleton
     ind_min = (skeleton - buffer).clamp(0)
     ind_max = skeleton + buffer
 
@@ -64,8 +80,6 @@ def get_instance(mask: Tensor,
 
     ind_min = ind_min.min(0)[0]
     ind_max = ind_max.max(0)[0]
-
-    print('min/max: ', ind_min, ind_max)
 
     # Get a crop of the vectors
     crop = vectors[:,
@@ -78,22 +92,24 @@ def get_instance(mask: Tensor,
                 ind_min[1]:ind_max[1],
                 ind_min[2]:ind_max[2]].unsqueeze(0).cuda()
 
+    # for i in range(crop.shape[-1]):
+    #     plt.imshow(mask_crop[0, :, :, i].detach().cpu().numpy())
+    #     plt.title(f'maks_{i}')
+    #     plt.show()
+    #
+    #     plt.imshow(crop[0, 0, :, :, i].detach().cpu().numpy())
+    #     plt.title(f'vec_{i}')
+    #     plt.show()
+
     crop = vector_to_embedding(scale=num.cuda(), vector=crop)
 
-    # Adjust the skeleton crop
-    skeleton = skeleton.sub(ind_min).cuda()  # Adjust skeleton and put into a dict
+    skeleton = skeleton.sub(ind_min)  # Adjust skeleton and put into a dict
 
-    #SHAPES:             C      X               Y               Z
-    baked = torch.zeros((3, crop.shape[-3], crop.shape[-2], crop.shape[-1]), device=crop.device)
-
-    nonzero = mask_crop[0, ...].nonzero()
-    dist = torch.cdist(skeleton.unsqueeze(0).float(), nonzero.unsqueeze(0).float())
-    ind = torch.argmin(dist.squeeze(0), dim=0)
-    baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skeleton[ind, :].float().T
+    baked = bake_skeleton(masks=mask_crop.add(1).gt(0).cpu(), skeletons={1: skeleton}, average=True, device='cpu')
 
     # Get the probability from the skeleton
-    prob = baked_embed_to_prob(crop, baked, torch.tensor((3, 3, 3), device=crop.device))[0]
-    print(f'inside_get_instance: {id=}, {prob.max()=}')
+
+    prob = baked_embed_to_prob(crop, baked.to(crop.device), sigma=sigma.to(crop.device))[0]
     prob = prob.gt(thr).mul(id).squeeze()
 
     # Put it back into the mask
@@ -140,7 +156,7 @@ def eval(image_path: str) -> None:
     image = F.pad(image, pad3d, mode='reflect')
     print(image.shape)
 
-    num_tuple = (60, 60, 6)
+    num_tuple = (60, 60, 2)
     num = torch.tensor(num_tuple)
 
     #
@@ -233,6 +249,7 @@ def eval(image_path: str) -> None:
         id = 2
 
         skeleton = skeleton.mul(semantic.gt(0.5))
+        vectors = vectors * semantic.gt(0.5)
 
         # for i in range(1):
         #     skeleton = dilate(skeleton)
@@ -245,13 +262,12 @@ def eval(image_path: str) -> None:
             '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
             skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
-        vectors = vectors * semantic.gt(0.5)
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
                   vectors.mul(2).div(2).mul(255).round().cpu().numpy().transpose(-1, 1, 2, 0))
 
         print('Saved', skeleton.shape, semantic.shape)
 
-        skeleton, skeleton_dict = efficient_flood_fill(skeleton, device='cuda:0')
+        skeleton, skeleton_dict = efficient_flood_fill(skeleton, skeletonize=True, device='cuda:0')
 
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
                   skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
@@ -268,5 +284,5 @@ def eval(image_path: str) -> None:
 
 
 if __name__ == '__main__':
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
+    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
     eval(image_path)
