@@ -198,30 +198,30 @@ class split(nn.Module):
         distance = torch.zeros_like(gt) + gt
 
         for _ in range(self.n):
-            print("yeet")
             gt = binary_erosion(gt)
             distance = distance + gt   # psuedo distance function...
 
-        distance = distance.div(self.n)
-        assert distance.max() <= 1
+        distance = distance.div(self.n - 1)
 
         pred = pred.sub(binary_erosion(pred)) \
                    .mul(2)  # cheeky edge detection function
 
-        return self._split_loss(edges=pred, distance=distance, a=self.a).mean()
+        _split_loss = self._split_loss(edges=pred, distance=distance, a=self.a)
+
+        return _split_loss.mean()
 
     @staticmethod
-    @torch.jit.script
+    # @torch.jit.script
     def _split_loss(edges: Tensor, distance: Tensor, a: Tensor):
         return torch.pow(edges, a * distance)
 
 
 if __name__ == '__main__':
-    lossfn = torch.jit.script(split(2, 1.5, device='cpu'))
+    lossfn = split(2, 1.5, device='cpu')
     print(lossfn)
 
     predicted = torch.rand((1, 1, 20, 20, 10), device='cpu')
-    gt = torch.rand((1, 1, 20, 20, 10), device='cpu').mul(10).round().float()
+    gt = torch.rand((1, 1, 20, 20, 10), device='cpu').round().float()
 
     a = lossfn(predicted, gt)
     print(a)

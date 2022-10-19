@@ -82,6 +82,7 @@ def engine(
     # Warmup...
     for images, masks, skeleton, skele_masks, baked in train_data:
         pass
+
     warmup_range = trange(1000, desc = 'Warmup: {}')
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
@@ -100,6 +101,10 @@ def engine(
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
             _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
             loss = _loss_embed + (1 * _loss_prob) + (1 * _loss_skeleton)
+
+            # print('All Skeleton Loss: ', _loss_skeleton.item())
+            # print('Skeleton Loss of just crossover: ',
+            #       skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float()))
 
             warmup_range.desc = f'{loss.item()}'
 
@@ -134,11 +139,10 @@ def engine(
                 embedding: Tensor = vector_to_embedding(num, vector)
                 out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
-                _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
+                _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, :w
+                # Z?]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
                 _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
-
-                print(_loss_skeleton)
 
                 loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 500 else 0) * _loss_skeleton)
 
