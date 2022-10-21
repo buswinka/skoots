@@ -48,7 +48,7 @@ def get_instance(mask: Tensor,
                  id: int,
                  num: Tensor,
                  thr: float = 0.5,
-                 sigma: Tensor = torch.tensor((10, 10, 3)),
+                 sigma: Tensor = torch.tensor((15, 15, 8)),
                  min_instance_volume: int = 183) -> Tensor:
     """
     Gets an instance mask of a single object associated with identified Skeleton
@@ -105,9 +105,7 @@ def get_instance(mask: Tensor,
 
     skeleton = skeleton.sub(ind_min)  # Adjust skeleton and put into a dict
 
-    baked = bake_skeleton(masks=mask_crop.add(1).gt(0).cpu(), skeletons={1: skeleton}, average=True, device='cpu')
-
-    # Get the probability from the skeleton
+    baked = bake_skeleton(masks=mask_crop.add(1).gt(0), skeletons={1: skeleton}, average=True, device='cuda')
 
     prob = baked_embed_to_prob(crop, baked.to(crop.device), sigma=sigma.to(crop.device))[0]
     prob = prob.gt(thr).mul(id).squeeze()
@@ -175,12 +173,12 @@ def eval(image_path: str) -> None:
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     checkpoint = torch.load(
-        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct14_13-09-30_CHRISUBUNTU.trch')
+        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct20_11-54-51_CHRISUBUNTU.trch')
 
     state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
     model_constructor = get_constructor('unext', spatial_dim=3)  # gets the model from a name...
-    backbone = model_constructor(in_channels=1, out_channels=60, dims=[60, 120, 240, 120, 60])
+    backbone = model_constructor(in_channels=1, out_channels=32, dims=[32, 64, 128, 64, 32])
     model = SpatialEmbedding(
         backbone=backbone
     )

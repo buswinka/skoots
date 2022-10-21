@@ -83,7 +83,7 @@ def engine(
     for images, masks, skeleton, skele_masks, baked in train_data:
         pass
 
-    warmup_range = trange(1000, desc = 'Warmup: {}')
+    warmup_range = trange(100, desc = 'Warmup: {}')
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
 

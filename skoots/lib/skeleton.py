@@ -1,10 +1,11 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
+from torchvision.transforms.functional import gaussian_blur
 
 from typing import List, Tuple, Dict, Optional 
 
-from skoots.lib.morphology import _compute_zero_padding, _get_binary_kernel3d
+from skoots.lib.morphology import gauss_filter, binary_dilation, _compute_zero_padding, _get_binary_kernel3d
 
 
 
@@ -45,15 +46,14 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
                   average: bool = True,
                   device: str = 'cpu') -> Tensor:
     """
-    For each pixel :math:`p_ik` of object :math:`k` at index :math:`i\in[x,y,z]` in masks, returns a baked_skeleton tensor where
-    the value at each index is the closest skeleton point :math:`s_{jk}` of any instance :math:`k`.
+    For each pixel :math:`p_ik` of object :math:`k` at index :math:`i\in[x,y,z]` in masks, returns a baked skeleton
+    tensor where the value at each index is the closest skeleton point :math:`s_{jk}` of any instance :math:`k`.
 
     Formally, the value at each position :math:`i\in[x,y,z]` of the baked skeleton tensor :math:`S` is the minimum of the
     euclidean distance function :math:`f(a, b)` and the skeleton point of any instance:
 
     .. math::
         S_{i} = min\left( f(i, s_{k}) \right) for k \in [1, 2, ..., N]
-
 
     Shapes:
         - masks: :math:`(1, X_{in}, Y_{in}, Z_{in})`
@@ -72,18 +72,22 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
 
     baked = torch.zeros((3, masks.shape[1], masks.shape[2], masks.shape[3]), device=device)
 
+    assert baked.device == masks.device, 'Masks device must equal kwarg device'
+
     unique = torch.unique(masks)
 
     anisotropy = torch.tensor(anisotropy, device=device).view(1, 1, 3)
 
     for id in unique[unique != 0]:
 
-        nonzero: Tensor = masks[0, ...].eq(id).nonzero().unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
-        skel: Tensor = skeletons[int(id)].to(device).unsqueeze(0).float().mul(anisotropy)  # 1, N, 3
+        nonzero: Tensor = masks[0, ...].eq(id).nonzero().unsqueeze(0).float() # 1, N, 3
+        skel: Tensor = skeletons[int(id)].to(device).unsqueeze(0).float()  # 1, N, 3
 
         # Calculate the distance between the skeleton of object 'id'
         # and all nonzero pixels of the binary mask of instance 'id'
-        ind: Tensor = torch.cdist(skel, nonzero).squeeze(0).argmin(dim=0)
+        ind: Tensor = torch.cdist(x1=skel.mul(anisotropy),
+                                  x2=nonzero.mul(anisotropy)
+                                  ).squeeze(0).argmin(dim=0)
 
         nonzero = nonzero.squeeze(0).long()  # Can only index with long dtype
 
@@ -92,6 +96,47 @@ def bake_skeleton(masks: Tensor, skeletons: Dict[int, Tensor],
     baked = average_baked_skeletons(baked.unsqueeze(0)).squeeze(0) if average else baked
 
     return baked
+
+
+def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) -> Tensor:
+    """
+    Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or whatever...
+
+    Shapes:
+        - skeletons: [N, 3]
+        - shape :math:`(3)`
+        - returns: math:`(1, X_{in}, Y_{in}, Z_{in})`
+
+    :param skeletons: Dict of skeletons
+    :param shape: Shape of final mask
+    :return: Maks of embedded skeleton px
+    """
+    skeleton_mask = torch.zeros(shape)
+
+    for k in skeletons:
+        x = skeletons[k][:, 0].long()
+        y = skeletons[k][:, 1].long()
+        z = skeletons[k][:, 2].long()
+
+
+        ind_x = torch.logical_and(x >= 0, x < shape[0])
+        ind_y = torch.logical_and(y >= 0, y < shape[1])
+        ind_z = torch.logical_and(z >= 0, z < shape[2])
+        ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3 # I think this is equivalend to a 3 way logical and
+
+        skeleton_mask[x[ind], y[ind], z[ind]] = 1
+
+    skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
+
+    skeleton_mask = gauss_filter(binary_dilation(skeleton_mask), [15, 15, 3], [0.8, 0.8, 0.8])
+
+    return skeleton_mask.squeeze(0)
+
+# skel_mask = skeleton_to_mask(skel, (20, 20, 6))
+
+
+
+
 
 
 if __name__ == '__main__':

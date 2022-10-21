@@ -21,6 +21,16 @@ class dataset(Dataset):
                  pad_size: Optional[int] = 100,
                  device: Optional[str] = 'cpu',
                  sample_per_image: Optional[int] = 1):
+        """
+
+        Will output as device, but for all data to be stored on device, you must explicitly call self.to(device)
+
+        :param path:
+        :param transforms:
+        :param pad_size:
+        :param device:
+        :param sample_per_image:
+        """
 
         super(Dataset, self).__init__()
 
@@ -65,8 +75,8 @@ class dataset(Dataset):
             scale = scale if image.max() > 1 else 1.
 
             # Convert to torch.tensor
-            image: Tensor = torch.from_numpy(image / scale).to(self.device)
-            masks: Tensor = torch.from_numpy(masks).int().unsqueeze(0).to(self.device)
+            image: Tensor = torch.from_numpy(image / scale)  # .to(self.device)
+            masks: Tensor = torch.from_numpy(masks).int().unsqueeze(0) # .to(self.device)
 
             # I need the images in a float, but use torch automated mixed precision so can store as half.
             # This may not be the same for you!
@@ -171,7 +181,7 @@ class BackgroundDataset(Dataset):
             scale: int = 2 ** 16 if image.max() > 256 else 255  # Our images might be 16 bit, or 8 bit
             scale: int = scale if image.max() > 1 else 1
 
-            image: Tensor = torch.from_numpy(image / scale).to(self.device)
+            image: Tensor = torch.from_numpy(image / scale) # .to(self.device)
             self.image.append(image.half())
 
     def __len__(self) -> int:
@@ -261,7 +271,6 @@ class MultiDataset(Dataset):
         for i in range(self.num_datasets):
             self.datasets[i].to('cpu')
         return self
-
 
 
 # Custom batching function!

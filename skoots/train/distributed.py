@@ -1,3 +1,4 @@
+import warnings
 from functools import partial
 import os.path
 
@@ -36,10 +37,20 @@ def train(rank: str,
     data = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/train',
                    transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
                    pad_size=100).to(device)
+
+    # # data1 = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/rutherford',
+    # #                transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
+    # #                pad_size=100).to('cpu')
+    #
+    # data2 = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/MitoR/train',
+    #                 transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
+    #                 pad_size=100).to('cpu')
+
     background = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/background',
                          transforms=partial(background_transform_3D, device=device), sample_per_image=6, device=device,
                          pad_size=100).to(device)
     merged = MultiDataset(data, background)
+
     train_sampler = torch.utils.data.distributed.DistributedSampler(merged)
     dataloader = DataLoader(merged, num_workers=0, batch_size=2, sampler=train_sampler, collate_fn=skeleton_colate)
 
@@ -56,13 +67,10 @@ def train(rank: str,
     torch.autograd.profiler.emit_nvtx(enabled=False)
     torch.autograd.set_detect_anomaly(False)
 
-    # checkpoint = torch.load(
-    #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Aug26_20-17-17_CHRISUBUNTU.trch')
 
-    # state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
+    # anisotropy is roughly (1, 1, 5)
 
-
-    initial_sigma = torch.tensor([20., 20., 6.], device=device)
+    initial_sigma = torch.tensor([20., 20., 4.], device=device)
     a = {'multiplier': 0.66, 'epoch': 200}
     b = {'multiplier': 0.66, 'epoch': 800}
     c = {'multiplier': 0.66, 'epoch': 1500}
@@ -72,7 +80,7 @@ def train(rank: str,
 
     constants = {
         'model': model,
-        'vector_scale': (60, 60, 6),
+        'vector_scale': (60, 60, 60 // 5),
         'lr': 5e-4,
         'wd': 1e-6,
         'optimizer': partial(torch.optim.AdamW, eps=1e-16),
@@ -81,7 +89,7 @@ def train(rank: str,
         'loss_embed': tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
         'loss_prob': tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
         'loss_skele': tversky(alpha=0.5, beta=1.5, eps=1e-8, device=device),
-        'epochs': 2500,
+        'epochs': 5000,
         'device': device,
         'train_data': dataloader,
         'val_data': valdiation_dataloader,

@@ -2,9 +2,10 @@ import torch
 from torch import Tensor
 import torch.nn.functional as F
 from typing import Dict, Tuple, Union, Sequence, List
+from typing import Tuple
 
 @torch.jit.script
-def _compute_zero_padding(kernel_size: Tuple[int, int, int]) -> Tuple[int, int, int]:
+def _compute_zero_padding(kernel_size: List[int]) -> Tuple[int, int, int]:
     r"""Utility function that computes zero padding tuple.
     Adapted from Kornia
     """
@@ -29,6 +30,46 @@ def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
     ind = torch.nonzero(kernel.view(kernel.shape[0], -1).sum(1))
     return kernel[ind[:, 0], ...]
 
+
+# FROM TORCHVISIN FUNCTIONAL
+def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
+    ksize_half = (kernel_size - 1) * 0.5
+
+    x = torch.linspace(-ksize_half, ksize_half, steps=kernel_size)
+    pdf = torch.exp(-0.5 * (x / sigma).pow(2))
+    kernel1d = pdf / pdf.sum()
+
+    return kernel1d
+
+# FROM TORCHVISIN FUNCTIONAL
+def _get_gaussian_kernel2d(
+    kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
+) -> Tensor:
+    kernel1d_x = _get_gaussian_kernel1d(kernel_size[0], sigma[0]).to(device, dtype=dtype)
+    kernel1d_y = _get_gaussian_kernel1d(kernel_size[1], sigma[1]).to(device, dtype=dtype)
+    kernel2d = torch.mm(kernel1d_y[:, None], kernel1d_x[None, :])
+    return kernel2d
+
+def _get_gaussian_kernel3d(
+        kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
+) -> Tensor:
+    kernel1d_x = _get_gaussian_kernel1d(kernel_size[0], sigma[0]).to(device, dtype=dtype)
+    kernel1d_y = _get_gaussian_kernel1d(kernel_size[1], sigma[1]).to(device, dtype=dtype)
+    kernel1d_z = _get_gaussian_kernel1d(kernel_size[2], sigma[2]).to(device, dtype=dtype)
+
+    kernel3d = (kernel1d_x[:, None] @ kernel1d_y[None, :]).unsqueeze(-1) @ kernel1d_z[None, :]
+    return kernel3d
+
+
+@torch.jit.script
+def gauss_filter(input: Tensor, kernel: List[int], sigma: List[float]) -> Tensor:
+    padding: Tuple[int, int, int] = _compute_zero_padding(kernel)
+    kernel: Tensor = _get_gaussian_kernel3d(kernel, sigma, input.dtype, input.device)
+    kernel = kernel.expand(input.shape[1], 1, kernel.shape[0], kernel.shape[1], kernel.shape[2])
+
+    features: Tensor = F.conv3d(input, kernel, padding=padding, stride=(1, 1, 1), groups=input.shape[1])
+
+    return features
 
 @torch.jit.script
 def binary_erosion(image: Tensor) -> Tensor:

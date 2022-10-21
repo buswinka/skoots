@@ -62,7 +62,7 @@ def efficient_flood_fill(skeleton: Tensor,
 
             # Experimental
             if skeletonize:
-                scale_factor = 2
+                scale_factor = 3
                 a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
                 _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
 
