@@ -9,6 +9,8 @@ class Sigma:
         """
         Creates an object which inputs an epoch, and returns a torch.tensor of [sigma_x, sigma_y, sigma_z]
 
+        Sigma should reflect the Error of embedding vectors at each spatial dim.
+
         :param adjustments: lost of adjustments and when to apply them
         :param initial_sigma: initial values of sigma at epoch=0
         :param device: device to load sigma on ('cpu' or 'cuda')

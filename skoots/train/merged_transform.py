@@ -413,41 +413,11 @@ def merged_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] = No
     data_dict['masks'] = masks
     data_dict['skeletons'] = skeletons
 
-    # # Bake the skeleton using per crop baking... No need for fancy shit...
-    # baked = torch.zeros((3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE)
-    # unique = torch.unique(masks)
-    #
-    #
-    # anisotropy = torch.tensor([1, 1, 3], device=DEVICE).view(1, 1, 3)
-    # for id in unique[unique != 0]:
-    #     if id == 0: continue
-    #     nonzero = (masks[0, ...] == id).nonzero()  # N, 3
-    #
-    #     skel = skeletons[int(id)]  # N, 3
-    #
-    #     dist = torch.cdist(skel.unsqueeze(0).float().mul(anisotropy), nonzero.unsqueeze(0).float().mul(anisotropy))
-    #     ind = torch.argmin(dist.squeeze(0), dim=0)
-    #
-    #     baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skel[ind, :].float().T
-    #
-    # baked: Tensor = average_baked_skeletons(baked.unsqueeze(0)).squeeze(0)  # requires batching...
-
-    baked: Tensor = bake_skeleton(masks, skeletons, device=DEVICE)
+    baked: Tensor = bake_skeleton(masks, skeletons, anisotropy=[1.0, 1.0, 5.0], average=True, device=DEVICE)
     data_dict['baked-skeleton']: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
     data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z))
-
-    # # Create Skeleton Mask!
-    # skele_mask = torch.zeros_like(masks)
-    # for k in skeletons:  # Dict[str, Tensor[N, 3]
-    #     x = skeletons[k][:, 0].float().clamp(0, image.shape[1] - 1).long()
-    #     y = skeletons[k][:, 1].float().clamp(0, image.shape[2] - 1).long()
-    #     z = skeletons[k][:, 2].float().clamp(0, image.shape[3] - 1).long()
-    #
-    #     skele_mask[:, x, y, z] = 1
-    #
-    # data_dict['skele_masks'] = mean_filter(dilate(skele_mask.float().unsqueeze(0)))
 
     return data_dict
 

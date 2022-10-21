@@ -16,6 +16,27 @@ from skoots.train.setup import setup_process, cleanup, find_free_port
 import torch.multiprocessing as mp
 import torch.nn as nn
 
+"""
+ASSUMPTIONS: 
+    - Model predicts spatially accurate vector strengths. Ie. 1 in a vector is 60*(0.085nm)
+    - Vector Scale Factor turns 1,1,1 -> 60 60 12
+    - Sigma is the spatial correction factor, which can vary between XYZ. Sigma represents distance in PX space
+    - Closest Skeleton must take into account SPATIAL distance, not px distance
+
+PLACES WHICH HANDLE ANISOTROPY
+    - skoots.train.generate_skeletons.calculate_skeletons also takes some anisotropy into account...
+    - vec2embed handles anisotropy
+    - sigma in embed2prob handles anisotropy
+    - Baked Skeleton: When calculating the optimal skeleton location, it 
+    
+CURRENT STRATEGY
+    - Baked Skeleton Anisotropy (1, 1, 1) # should be 1, 1, 5 in TRAIN mode but (1, 1, 1) in eval
+    - Vec2Embed (60, 60, 12)  # ratio:(1, 1, 5)
+    - Sigma (20, 20, 4)  # ratio:(1, 1, 5)
+
+"""
+
+
 
 torch.manual_seed(0)
 
@@ -57,7 +78,7 @@ def train(rank: str,
     # Validation Dataset
     vl = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate',
                  transforms=partial(merged_transform_3D, device=device), device=device, sample_per_image=8,
-                 pad_size=100).to('cpu')
+                 pad_size=100).to(device)
     test_sampler = torch.utils.data.distributed.DistributedSampler(vl)
     valdiation_dataloader = DataLoader(vl, num_workers=0, batch_size=2, sampler=test_sampler,
                                        collate_fn=skeleton_colate)
@@ -67,10 +88,9 @@ def train(rank: str,
     torch.autograd.profiler.emit_nvtx(enabled=False)
     torch.autograd.set_detect_anomaly(False)
 
-
     # anisotropy is roughly (1, 1, 5)
 
-    initial_sigma = torch.tensor([20., 20., 4.], device=device)
+    initial_sigma = torch.tensor([20., 20., 20.], device=device)
     a = {'multiplier': 0.66, 'epoch': 200}
     b = {'multiplier': 0.66, 'epoch': 800}
     c = {'multiplier': 0.66, 'epoch': 1500}
@@ -89,7 +109,7 @@ def train(rank: str,
         'loss_embed': tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
         'loss_prob': tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
         'loss_skele': tversky(alpha=0.5, beta=1.5, eps=1e-8, device=device),
-        'epochs': 5000,
+        'epochs': 1000,
         'device': device,
         'train_data': dataloader,
         'val_data': valdiation_dataloader,
