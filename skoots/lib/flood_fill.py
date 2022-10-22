@@ -20,7 +20,7 @@ def efficient_flood_fill(skeleton: Tensor,
     """
     # This is the w/h/d on EITHER side of a center seed point.
     # resulting crop size will be:  [2W, 2H, 2D]
-    w, h, d = [550, 550, 20]
+    w, h, d = [550, 550, 50]
 
     unlabeled = skeleton.eq(1).nonzero()  # Get ALL unlabeled pixels
 
@@ -62,9 +62,13 @@ def efficient_flood_fill(skeleton: Tensor,
 
             # Experimental
             if skeletonize:
-                scale_factor = 3
-                a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
-                _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
+                # scale_factor = 5
+                # a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
+                # _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
+                _skeleton = torch.from_numpy(sk_skeletonize(ind.cpu().numpy())).nonzero().to(ind.device)
+
+                if _skeleton.numel() == 0:
+                    _skeleton = torch.nonzero(ind) # If there are no skeletons, just return mean
 
             else:
                 _skeleton = torch.nonzero(ind)

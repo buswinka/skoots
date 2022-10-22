@@ -47,8 +47,8 @@ def get_instance(mask: Tensor,
                  skeleton: Tensor,
                  id: int,
                  num: Tensor,
-                 thr: float = 0.5,
-                 sigma: Tensor = torch.tensor((15, 15, 8)),
+                 thr: float = 0.3,
+                 sigma: Tensor = torch.tensor((5,5,5)),
                  min_instance_volume: int = 183) -> Tensor:
     """
     Gets an instance mask of a single object associated with identified Skeleton
@@ -75,6 +75,7 @@ def get_instance(mask: Tensor,
     ind_min = (skeleton - buffer).clamp(0)
     ind_max = skeleton + buffer
 
+
     for i in range(3):  # Clamp this to the vindow...
         ind_max[:, i] = ind_max[:, i].clamp(0, vectors.shape[i + 1])  # Vector is [3, X, Y, Z]
 
@@ -92,14 +93,6 @@ def get_instance(mask: Tensor,
                 ind_min[1]:ind_max[1],
                 ind_min[2]:ind_max[2]].unsqueeze(0).cuda()
 
-    # for i in range(crop.shape[-1]):
-    #     plt.imshow(mask_crop[0, :, :, i].detach().cpu().numpy())
-    #     plt.title(f'maks_{i}')
-    #     plt.show()
-    #
-    #     plt.imshow(crop[0, 0, :, :, i].detach().cpu().numpy())
-    #     plt.title(f'vec_{i}')
-    #     plt.show()
 
     crop = vector_to_embedding(scale=num.cuda(), vector=crop)
 
@@ -145,16 +138,14 @@ def eval(image_path: str) -> None:
 
     image: Tensor = torch.from_numpy(image / scale)
 
-    print(image.shape, scale, image.max(), image.min())
-
     # image = image.transpose(0, -1).squeeze().unsqueeze(0)
     # image = torch.clamp(image, 0, 1)
     pad3d = (5, 5, 30, 30, 30, 30)  # Pads last dim first!
     # pad3d = False
     image = F.pad(image, pad3d, mode='reflect')
-    print(image.shape)
 
-    num_tuple = (60, 60, 2)
+    num_tuple = (60, 60, 60 // 5),
+    print(num_tuple)
     num = torch.tensor(num_tuple)
 
     #
@@ -173,7 +164,7 @@ def eval(image_path: str) -> None:
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     checkpoint = torch.load(
-        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct20_11-54-51_CHRISUBUNTU.trch')
+        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_12-30-49_CHRISUBUNTU.trch')
 
     state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 

@@ -33,7 +33,14 @@ CURRENT STRATEGY
     - Baked Skeleton Anisotropy (1, 1, 1) # should be 1, 1, 5 in TRAIN mode but (1, 1, 1) in eval
     - Vec2Embed (60, 60, 12)  # ratio:(1, 1, 5)
     - Sigma (20, 20, 4)  # ratio:(1, 1, 5)
-
+    
+    
+NEW STRATEGY (Oct 21):
+    - These models seem to like embedding to the current Z slice more than up or down. Adjust bkaed
+    skeleon anisotropy to (1, 1, 15) and see what happens
+    - set skeleton loss start at epoch 100 (from 500) for pretrained models...
+    - skeleton overlap loss causes skeletons to be phat
+    - EVAL anisotropy param for bake skeletons should also probably be huge (1. 1. 15)
 """
 
 
@@ -104,12 +111,12 @@ def train(rank: str,
         'lr': 5e-4,
         'wd': 1e-6,
         'optimizer': partial(torch.optim.AdamW, eps=1e-16),
-        'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=2500 + 1),
+        'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=10000 + 1),
         'sigma': sigma,
         'loss_embed': tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
         'loss_prob': tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
         'loss_skele': tversky(alpha=0.5, beta=1.5, eps=1e-8, device=device),
-        'epochs': 1000,
+        'epochs': 10000,
         'device': device,
         'train_data': dataloader,
         'val_data': valdiation_dataloader,

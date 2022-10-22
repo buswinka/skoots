@@ -76,7 +76,7 @@ def engine(
     avg_val_prob_loss = []
     avg_val_skele_loss = []
 
-    skel_crossover_loss = skoots.train.loss.split(n_iter=3, alpha=2)
+    # skel_crossover_loss = skoots.train.loss.split(n_iter=3, alpha=2)
 
 
     # Warmup...
@@ -99,7 +99,7 @@ def engine(
 
             _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) #+ skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
             loss = _loss_embed + (1 * _loss_prob) + (1 * _loss_skeleton)
 
             # print('All Skeleton Loss: ', _loss_skeleton.item())
@@ -142,9 +142,9 @@ def engine(
                 _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, :w
                 # Z?]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) #+ skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
-                loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 500 else 0) * _loss_skeleton)
+                loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 100 else 0) * _loss_skeleton)
 
                 if torch.isnan(loss):
                     print(f'Found NaN value in loss.\n\tLoss Embed: {_loss_embed}\n\tLoss Probability: {_loss_prob}')

@@ -134,7 +134,7 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) 
     skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
 
     for _ in range(2):  # this might make things a bit better on the skeleton side of things...
-        skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0).float()), [15, 15, 1], [0.8, 0.8, 0.8])
+        skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0.5).float()), [15, 15, 1], [0.8, 0.8, 0.8])
 
     return skeleton_mask.squeeze(0)
 
