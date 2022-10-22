@@ -127,7 +127,8 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) 
         ind_x = torch.logical_and(x >= 0, x < shape[0])
         ind_y = torch.logical_and(y >= 0, y < shape[1])
         ind_z = torch.logical_and(z >= 0, z < shape[2])
-        ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3  # I think this is equivalend to a 3 way logical and
+
+        ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3  # Equivalent to a 3 way logical and
 
         skeleton_mask[x[ind], y[ind], z[ind]] = 1
 
@@ -151,7 +152,8 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     :param embed: Embedding
     :return: Instance Mask
     """
-    # Experimental!!!
+    assert embed.device == skeleton.device, 'embed and skeleton must be on same device'
+    assert embed.shape[2::] == skeleton.shape[2::], 'embed and skeleton must have identical spatial dimensions'
 
     b, c, x, y, z = embed.shape                     # get the shape of the embedding
     embed = embed.view((c, -1)).round()             # flatten the embedding to extract it as an index
@@ -161,13 +163,15 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     z_ind = embed[2, :].clamp(0, z).long()
 
     b, c, x, y, z = skeleton.shape
-    out = torch.zeros_like(skeleton).flatten()      # For indexing to work, the out tensor has to be flat
-    ind = torch.arange(0, x_ind.shape[-1])          # For each out pixel, we take the embedding at that loc and assign it to skeleton
+    out = torch.zeros_like(skeleton, device=skeleton.device).flatten()   # For indexing to work, the out tensor
+                                                                         # has to be flat
+
+    ind = torch.arange(0, x_ind.shape[-1], device=embed.device)          # For each out pixel, we take the embedding at
+                                                                         # that loc and assign it to skeleton
 
     out[ind] = skeleton[:, :, x_ind, y_ind, z_ind]  # assign the skeleton ind to the out tensor
 
     return out.view(b, c, x, y, z)                  # return the re-shaped out tensor
-
 
 
 if __name__ == '__main__':
