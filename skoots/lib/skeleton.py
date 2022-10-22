@@ -139,6 +139,42 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) 
     return skeleton_mask.squeeze(0)
 
 
+def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
+    """
+    Returns an instance mask by indexing skeleton with an embedding tensor
+
+    Shapes:
+        -skeleton: :math:`(B_{in}=1, 1, X_{in}, Y_{in}, Z_{in})`
+        -embed: :math:`(B_{in}=1, 3, X_{in}, Y_{in}, Z_{in})`
+
+    :param skeleton: Skeleton of a single instance
+    :param embed: Embedding
+    :return: Instance Mask
+    """
+    # Experimental!!!
+
+    b, c, x, y, z = embed.shape                     # get the shape of the embedding
+    embed = embed.view((c, -1)).round()             # flatten the embedding to extract it as an index
+
+    x_ind = embed[0, :].clamp(0, x)                 # Use the embedding as an x,y,z index
+    y_ind = embed[1, :].clamp(0, y)
+    z_ind = embed[2, :].clamp(0, z)
+
+    b, c, x, y, z = skeleton.shape
+    out = torch.zeros_like(skeleton).flatten()      # For indexing to work, the out tensor has to be flat
+    ind = torch.arange(0, x_ind.shape[-1])          # For each out pixel, we take the embedding at that loc and assign it to skeleton
+
+    out[ind] = skeleton[:, :, x_ind, y_ind, z_ind]  # assign the skeleton ind to the out tensor
+
+    return out.view(b, c, x, y, z)                  # return the re-shaped out tensor
+
+
+
+
+
+
+
+
 if __name__ == '__main__':
     skeleton = {1: torch.tensor([[10, 10, 2], [20, 20, 4]])}
     mask = torch.ones((1, 50, 50, 20))
