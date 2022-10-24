@@ -159,9 +159,12 @@ def eval(image_path: str) -> None:
 
     c, x, y, z = image.shape
 
-    skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
-    semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
-    vectors = torch.zeros((3, x, y, z), dtype=torch.float16)
+    """
+    FOR WHATEVER FUCKED UP REASON, CHANGING SEMANTIC TO UINT8 FUCKS THIS ALL UP!
+    """
+    skeleton = torch.zeros(size=(1, x, y, z))
+    semantic = torch.zeros((1, x, y, z), dtype=torch.half)
+    vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -265,7 +268,7 @@ def eval(image_path: str) -> None:
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
                   skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
-    instance_mask = torch.zeros_like(semantic).cpu()
+    instance_mask = torch.zeros_like(semantic, dtype=torch.int).cpu()
 
     # for k in tqdm(skeleton_dict.keys()):
     #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
