@@ -143,6 +143,7 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) 
 def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     """
     Returns an instance mask by indexing skeleton with an embedding tensor
+    For memory efficiency, skeleton is only ever Referenced! Never copied (I hope)
 
     Shapes:
         -skeleton: :math:`(B_{in}=1, 1, X_{in}, Y_{in}, Z_{in})`
@@ -150,28 +151,28 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
 
     :param skeleton: Skeleton of a single instance
     :param embed: Embedding
-    :return: Instance Mask
+    :return: torch.int instance mask
     """
     assert embed.device == skeleton.device, 'embed and skeleton must be on same device'
-    assert embed.shape[2::] == skeleton.shape[2::], 'embed and skeleton must have identical spatial dimensions'
+    # assert embed.shape[2::] == skeleton.shape[2::], 'embed and skeleton must have identical spatial dimensions'
+    assert embed.ndim == 5 and skeleton.ndim == 5, 'Embed and skeleton must be a 5D tensor'
 
     b, c, x, y, z = embed.shape                     # get the shape of the embedding
     embed = embed.view((c, -1)).round()             # flatten the embedding to extract it as an index
 
-    x_ind = embed[0, :].clamp(0, x).long()          # Use the embedding as an x,y,z index
-    y_ind = embed[1, :].clamp(0, y).long()
-    z_ind = embed[2, :].clamp(0, z).long()
+    x_ind = embed[0, :].clamp(0, x-1).long()          # Use the embedding as an x,y,z index
+    y_ind = embed[1, :].clamp(0, y-1).long()
+    z_ind = embed[2, :].clamp(0, z-1).long()
 
-    b, c, x, y, z = skeleton.shape
-    out = torch.zeros_like(skeleton, device=skeleton.device).flatten()   # For indexing to work, the out tensor
-                                                                         # has to be flat
+    out = torch.zeros((1, 1, x, y, z), device=embed.device, dtype=torch.int).flatten()   # For indexing to work, the out tensor
+                                                                           # has to be flat
 
-    ind = torch.arange(0, x_ind.shape[-1], device=embed.device)          # For each out pixel, we take the embedding at
-                                                                         # that loc and assign it to skeleton
+    ind = torch.arange(0, x_ind.shape[-1], device=embed.device)            # For each out pixel, we take the embedding at
+                                                                           # that loc and assign it to skeleton
 
-    out[ind] = skeleton[:, :, x_ind, y_ind, z_ind]  # assign the skeleton ind to the out tensor
+    out[ind] = skeleton[:, :, x_ind, y_ind, z_ind].int()  # assign the skeleton ind to the out tensor
 
-    return out.view(b, c, x, y, z)                  # return the re-shaped out tensor
+    return out.view(1, 1, x, y, z)                  # return the re-shaped out tensor
 
 
 if __name__ == '__main__':

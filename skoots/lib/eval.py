@@ -1,3 +1,4 @@
+import skoots.lib.skeleton
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -48,7 +49,7 @@ def get_instance(mask: Tensor,
                  id: int,
                  num: Tensor,
                  thr: float = 0.3,
-                 sigma: Tensor = torch.tensor((5,5,5)),
+                 sigma: Tensor = torch.tensor((5, 5, 5)),
                  min_instance_volume: int = 183) -> Tensor:
     """
     Gets an instance mask of a single object associated with identified Skeleton
@@ -75,7 +76,6 @@ def get_instance(mask: Tensor,
     ind_min = (skeleton - buffer).clamp(0)
     ind_max = skeleton + buffer
 
-
     for i in range(3):  # Clamp this to the vindow...
         ind_max[:, i] = ind_max[:, i].clamp(0, vectors.shape[i + 1])  # Vector is [3, X, Y, Z]
 
@@ -93,12 +93,12 @@ def get_instance(mask: Tensor,
                 ind_min[1]:ind_max[1],
                 ind_min[2]:ind_max[2]].unsqueeze(0).cuda()
 
-
     crop = vector_to_embedding(scale=num.cuda(), vector=crop)
 
     skeleton = skeleton.sub(ind_min)  # Adjust skeleton and put into a dict
 
-    baked = bake_skeleton(masks=mask_crop.add(1).gt(0), skeletons={1: skeleton}, average=True, device='cuda')
+    baked = bake_skeleton(masks=mask_crop.add(1).gt(0), skeletons={1: skeleton},
+                          average=True, anisotropy=(1., 1., 5.), device='cuda')
 
     prob = baked_embed_to_prob(crop, baked.to(crop.device), sigma=sigma.to(crop.device))[0]
     prob = prob.gt(thr).mul(id).squeeze()
@@ -129,14 +129,17 @@ def eval(image_path: str) -> None:
     image: np.array = image.transpose(-1, 1, 2, 0)
     image: np.array = image[[2], ...] if image.shape[0] > 3 else image  # [C=1, X, Y, Z]
 
+    # scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
+
     if image.max() > 256:
         scale: int = 2 ** 16
     elif image.max() <= 256 and image.max() > 1:
         scale = 256
-    elif image.max() < 1 and image.max() > 0:
+    elif image.max() <= 1 and image.max() > 0:
         scale = 1
 
     image: Tensor = torch.from_numpy(image / scale)
+    print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
     # image = image.transpose(0, -1).squeeze().unsqueeze(0)
     # image = torch.clamp(image, 0, 1)
@@ -145,7 +148,6 @@ def eval(image_path: str) -> None:
     image = F.pad(image, pad3d, mode='reflect')
 
     num_tuple = (60, 60, 60 // 5),
-    print(num_tuple)
     num = torch.tensor(num_tuple)
 
     #
@@ -157,14 +159,15 @@ def eval(image_path: str) -> None:
 
     c, x, y, z = image.shape
 
-    skeleton = torch.zeros(size=(1, x, y, z))
-    semantic = torch.zeros((1, x, y, z))
-    vectors = torch.zeros((3, x, y, z))
+    skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
+    semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
+    vectors = torch.zeros((3, x, y, z), dtype=torch.float16)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     checkpoint = torch.load(
-        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_12-30-49_CHRISUBUNTU.trch')
+        '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_17-15-08_CHRISUBUNTU.trch')
+        # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_12-30-49_CHRISUBUNTU.trch')
 
     state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
@@ -182,8 +185,9 @@ def eval(image_path: str) -> None:
     image = image.float()
     print(image.shape)
 
-    print('Begining Analysis....', end='')
-    iterator = tqdm(crops(image, cropsize, overlap), desc='')
+    total = (image.shape[1] // cropsize[0]) * (image.shape[2] // cropsize[1]) * (image.shape[3] // cropsize[2])
+    print('Begining Analysis....')
+    iterator = tqdm(crops(image, cropsize, overlap), desc='', total=total)
 
     id = 1
 
@@ -212,7 +216,7 @@ def eval(image_path: str) -> None:
                                                             overlap[0]: -overlap[0],
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
-                                                            :]
+                                                            :].half()
             semantic[:,
             x + overlap[0]: x + cropsize[0] - overlap[0],
             y + overlap[1]: y + cropsize[1] - overlap[1],
@@ -245,14 +249,14 @@ def eval(image_path: str) -> None:
         print(f'Semanntic Mask\n\t{semantic.max()=}\n\t{semantic.min()=}')
 
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
-                  semantic.mul(255).round().int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
+                  semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
 
         io.imsave(
             '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
             skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
-                  vectors.mul(2).div(2).mul(255).round().cpu().numpy().transpose(-1, 1, 2, 0))
+                  vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
 
         print('Saved', skeleton.shape, semantic.shape)
 
@@ -263,8 +267,22 @@ def eval(image_path: str) -> None:
 
     instance_mask = torch.zeros_like(semantic).cpu()
 
-    for k in tqdm(skeleton_dict.keys()):
-        instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
+    # for k in tqdm(skeleton_dict.keys()):
+    #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
+
+    skeleton = skeleton.unsqueeze(0).unsqueeze(0)
+
+    print(f'{vectors.shape=}, {skeleton.shape}')
+    iterator = tqdm(crops(vectors, [500, 500, 50], [0, 0, 0]), desc='Assigning Instances:', total=total)
+    for _vec, (x, y, z) in iterator:
+        _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
+        _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
+
+        _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
+                                                                    embed=_embed).squeeze()
+        w, h, d = _inst_maks.shape
+        print(_embed.shape, _vec.shape, _inst_maks.shape)
+        instance_mask[x:x+w, y:y+h, z:z+d] = _inst_maks
 
     print(instance_mask.unique().shape[0] - 1, ' Unique mito')
 
@@ -274,4 +292,6 @@ def eval(image_path: str) -> None:
 
 if __name__ == '__main__':
     image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
+    # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
+    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     eval(image_path)

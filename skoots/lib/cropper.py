@@ -9,6 +9,10 @@ def crops(image: Tensor,
     """
     Generator which takes an image and sends out crops of a certain size with overlap pixels
 
+    Shapes:
+        -image: :math:`(C, X, Y, Z)`
+        -yeilds: :math:`(B, C, X, Y, Z)`
+
     :param image: 4D torch.Tensor of shape [C, X, Y, Z]
     :param crop_size: Spatial dims of the resulting crops [X, Y, Z]
     :param overlap: Overlap between each crop
@@ -44,8 +48,6 @@ def crops(image: Tensor,
             z = 0
             while z < image_shape[3]:
                 _z = z if z + crop_size[2] <= image_shape[3] else image_shape[3] - crop_size[2]
-
-                # print(f'{x}:{x + cropsize[0]}, {y}:{y + cropsize[1]}, {z}:{z + cropsize[2]}')
 
                 yield image[:, _x:_x + crop_size[0], _y:_y + crop_size[1], _z:_z + crop_size[2]].unsqueeze(0), [_x, _y, _z]
 
