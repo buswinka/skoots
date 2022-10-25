@@ -129,41 +129,33 @@ def eval(image_path: str) -> None:
     image: np.array = image.transpose(-1, 1, 2, 0)
     image: np.array = image[[2], ...] if image.shape[0] > 3 else image  # [C=1, X, Y, Z]
 
-    # scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
+    scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
 
-    if image.max() > 256:
-        scale: int = 2 ** 16
-    elif image.max() <= 256 and image.max() > 1:
-        scale = 256
-    elif image.max() <= 1 and image.max() > 0:
-        scale = 1
+    # if image.max() > 256:
+    #     scale: int = 2 ** 16
+    # elif image.max() <= 256 and image.max() > 1:
+    #     scale = 256
+    # elif image.max() <= 1 and image.max() > 0:
+    #     scale = 1
 
-    image: Tensor = torch.from_numpy(image / scale)
+    image: Tensor = torch.from_numpy(image)
     print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
     # image = image.transpose(0, -1).squeeze().unsqueeze(0)
     # image = torch.clamp(image, 0, 1)
+    image = image.float()
     pad3d = (5, 5, 30, 30, 30, 30)  # Pads last dim first!
     # pad3d = False
-    image = F.pad(image, pad3d, mode='reflect')
+
+    image = F.pad(image, pad3d, mode='reflect') if pad3d else image
 
     num_tuple = (60, 60, 60 // 5),
     num = torch.tensor(num_tuple)
 
-    #
-    # image = torch.load('/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure 1 - overview/data/images.trch')
-    # image = image[1, ...]
-    # io.imsave('/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure 1 - overview/data/' +
-    #           'test.tif', image.permute(3,1,2,0).numpy())
-    # # return
-
     c, x, y, z = image.shape
 
-    """
-    FOR WHATEVER FUCKED UP REASON, CHANGING SEMANTIC TO UINT8 FUCKS THIS ALL UP!
-    """
     skeleton = torch.zeros(size=(1, x, y, z))
-    semantic = torch.zeros((1, x, y, z), dtype=torch.half)
+    semantic = torch.zeros((1, x, y, z))
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -180,24 +172,21 @@ def eval(image_path: str) -> None:
         backbone=backbone
     )
     model.load_state_dict(state_dict=state_dict)
-
     model = model.to(device).train()
+
     cropsize = [300, 300, 20]
     overlap = [60, 60, 5]
 
-    image = image.float()
-    print(image.shape)
-
-    total = (image.shape[1] // cropsize[0]) * (image.shape[2] // cropsize[1]) * (image.shape[3] // cropsize[2])
-    print('Begining Analysis....')
+    total = skoots.lib.cropper.get_total_num_crops(image.shape, cropsize, overlap)
     iterator = tqdm(crops(image, cropsize, overlap), desc='', total=total)
 
     id = 1
 
+    print('Begining Analysis....')
     with torch.no_grad():
         for slice, (x, y, z) in iterator:
             with autocast(enabled=True):  # Saves Memory!
-                out = model(slice.float().cuda())
+                out = model(slice.div(scale).float().cuda())
 
             probability_map = out[:, [-1], ...].cpu()
             skeleton_map = out[:, [-2], ...].cpu()
@@ -210,7 +199,7 @@ def eval(image_path: str) -> None:
                                                             overlap[0]: -overlap[0],
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
-                                                            :].gt(0.5)
+                                                            :]
 
             vectors[:,
             x + overlap[0]: x + cropsize[0] - overlap[0],
@@ -227,7 +216,7 @@ def eval(image_path: str) -> None:
                                                             overlap[0]: -overlap[0],
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
-                                                            :]
+                                                            :].gt(0.5)
 
             iterator.desc = f'Evaluating slice at: [x{x}:y{y}:z{z}]'
 
@@ -244,12 +233,10 @@ def eval(image_path: str) -> None:
 
         id = 2
 
-        skeleton = skeleton.mul(semantic.gt(0.5))
-        vectors = vectors * semantic.gt(0.5)
+        # In Place for memory efficiency
+        skeleton.mul_(semantic)
+        vectors.mul_(semantic)
 
-        # for i in range(1):
-        #     skeleton = dilate(skeleton)
-        print(f'Semanntic Mask\n\t{semantic.max()=}\n\t{semantic.min()=}')
 
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
                   semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
@@ -261,7 +248,6 @@ def eval(image_path: str) -> None:
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
                   vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
 
-        print('Saved', skeleton.shape, semantic.shape)
 
         skeleton, skeleton_dict = efficient_flood_fill(skeleton, skeletonize=True, device='cuda:0')
 
@@ -275,8 +261,7 @@ def eval(image_path: str) -> None:
 
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
 
-    print(f'{vectors.shape=}, {skeleton.shape}')
-    iterator = tqdm(crops(vectors, [500, 500, 50], [0, 0, 0]), desc='Assigning Instances:', total=total)
+    iterator = tqdm(crops(vectors, [500, 500, 50], [0, 0, 0]), desc='Assigning Instances:')
     for _vec, (x, y, z) in iterator:
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
@@ -284,11 +269,9 @@ def eval(image_path: str) -> None:
         _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
                                                                     embed=_embed).squeeze()
         w, h, d = _inst_maks.shape
-        print(_embed.shape, _vec.shape, _inst_maks.shape)
         instance_mask[x:x+w, y:y+h, z:z+d] = _inst_maks
 
     print(instance_mask.unique().shape[0] - 1, ' Unique mito')
-
     io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/instance_mask.tif',
               instance_mask.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 

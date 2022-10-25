@@ -2,6 +2,40 @@ import functools
 from torch import Tensor
 from typing import Tuple, List, Optional
 
+def get_total_num_crops(image_shape: Tensor, crop_size: List[int], overlap: Optional[Tuple[int]]) -> int:
+    total = 0
+
+    for i, size in enumerate(crop_size):
+        crop_size[i] = crop_size[i] if crop_size[i] < image_shape[i + 1] else image_shape[i + 1]
+        # overlap[i] = overlap[i] if cropsize[i] < image_shape[i+1] else 0
+
+    assert len(image_shape) - 1 == len(
+        crop_size) == len(overlap) == 3, f'Image Shape must equal the shape of the crop.\n{image.shape=}, {crop_size=}' \
+                                        f'{overlap=}'
+    dim = ['x', 'y', 'z']
+    for c, o, d in zip(crop_size, overlap, dim):
+        assert c - o*2 != 0, f'Overlap in {d} dimmension cannot be equal to or larger than crop size... {o*2=} < {c}'
+
+    x = 0
+    while x < image_shape[1]:
+        _x = x if x + crop_size[0] <= image_shape[1] else image_shape[1] - crop_size[0]
+
+        y = 0
+        while y < image_shape[2]:
+            _y = y if y + crop_size[1] <= image_shape[2] else image_shape[2] - crop_size[1]
+
+            z = 0
+            while z < image_shape[3]:
+                _z = z if z + crop_size[2] <= image_shape[3] else image_shape[3] - crop_size[2]
+
+                total += 1
+
+                z += (crop_size[2] - (overlap[2] * 2))
+            y += (crop_size[1] - (overlap[1] * 2))
+        x += (crop_size[0] - (overlap[0] * 2))
+
+    return total
+
 
 def crops(image: Tensor,
           crop_size: List[int],
@@ -25,8 +59,6 @@ def crops(image: Tensor,
         crop_size[i] = crop_size[i] if crop_size[i] < image_shape[i + 1] else image_shape[i + 1]
         # overlap[i] = overlap[i] if cropsize[i] < image_shape[i+1] else 0
 
-    print(f'Crops: {image_shape}')
-    print(crop_size)
 
     assert len(image_shape) - 1 == len(
         crop_size) == len(overlap) == 3, f'Image Shape must equal the shape of the crop.\n{image.shape=}, {crop_size=}' \
