@@ -160,9 +160,10 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     b, c, x, y, z = embed.shape                     # get the shape of the embedding
     embed = embed.view((c, -1)).round()             # flatten the embedding to extract it as an index
 
-    x_ind = embed[0, :].clamp(0, x-1).long()          # Use the embedding as an x,y,z index
-    y_ind = embed[1, :].clamp(0, y-1).long()
-    z_ind = embed[2, :].clamp(0, z-1).long()
+    # We need to only select indicies which lie within the skeleton
+    x_ind = embed[0, :].clamp(0, skeleton.shape[2]-1).long()
+    y_ind = embed[1, :].clamp(0, skeleton.shape[3]-1).long()
+    z_ind = embed[2, :].clamp(0, skeleton.shape[4]-1).long()
 
     out = torch.zeros((1, 1, x, y, z), device=embed.device, dtype=torch.int).flatten()   # For indexing to work, the out tensor
                                                                            # has to be flat
