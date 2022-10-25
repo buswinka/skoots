@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from skimage.morphology import flood_fill
+from skimage.morphology import flood_fill, flood
 from tqdm import tqdm
 from typing import Tuple, Optional, Union, Dict
 
@@ -25,7 +25,8 @@ def efficient_flood_fill(skeleton: Tensor,
     # resulting crop size will be:  [2W, 2H, 2D]
     w, h, d = [550, 550, 50]
 
-    unlabeled = skeleton.eq(1).nonzero()  # Get ALL unlabeled pixels. This is potentially SUPER inefficient...
+    unlabeled: list = skeleton.squeeze().eq(1).nonzero().tolist()  # Get ALL unlabeled pixels. This is potentially SUPER inefficient...
+    unlabeled: Dict[str, Tensor] = {str(x): x for x in unlabeled}            # convert to hash table for memory efficiency
 
     shape = skeleton.shape  # [X, Y, Z]
 
@@ -33,9 +34,10 @@ def efficient_flood_fill(skeleton: Tensor,
     skeleton_dict = {}
 
     pbar = tqdm()
-    while unlabeled.numel() > 0:  # hash map could improve performance...
-        ind = torch.randint(unlabeled.shape[0], (1,)).squeeze()
-        seed = unlabeled[ind, :].tolist()  # [X, Y ,Z]
+    while len(unlabeled) > 0:  # hash map could improve performance...
+        # ind = torch.randint(unlabeled.shape[0], (1,)).squeeze()
+        key, seed = unlabeled.popitem()
+        # seed = unlabeled[ind, :].tolist()  # [X, Y ,Z]
 
         # Get the indices of each crop. Respect the boundaries of the image
         x0 = torch.tensor(seed[0] - w).clamp(0, shape[0])
@@ -56,36 +58,40 @@ def efficient_flood_fill(skeleton: Tensor,
         seed = tuple(int(s - offset) for s, offset in zip(seed, [x0, y0, z0]))
 
         # Fill the image with the new id value by a flood_fill algorithm
-        crop = torch.from_numpy(flood_fill(crop.cpu().numpy(), seed_point=seed, new_value=id)).to(device)
+        mask = torch.from_numpy(flood(crop.cpu().numpy(), seed_point=seed)).to(device)
 
         # Assign the new pixels to the original tensor
-        ind = crop == id
-        if ind.nonzero().shape[0] > min_skeleton_size:
-            skeleton[x0:x1, y0:y1, z0:z1][ind] = crop[ind].to(skeleton.device)
+        # ind = crop == id
+        ind_nonzero = mask.nonzero()
+
+        if ind_nonzero.shape[0] > min_skeleton_size:
+            skeleton[x0:x1, y0:y1, z0:z1][mask] = id
 
             # Experimental
             if skeletonize:
                 # scale_factor = 5
                 # a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
                 # _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
-                _skeleton = torch.from_numpy(sk_skeletonize(ind.cpu().numpy())).nonzero().to(ind.device)
+                _skeleton = torch.from_numpy(sk_skeletonize(mask.cpu().numpy())).nonzero().to(device)
 
                 if _skeleton.numel() == 0:
-                    _skeleton = torch.nonzero(ind) # If there are no skeletons, just return mean
+                    _skeleton = ind_nonzero  # If there are no skeletons, just return mean
 
             else:
-                _skeleton = torch.nonzero(ind)
+                _skeleton = ind_nonzero
 
             skeleton_dict[id] = _skeleton.to(device) + torch.tensor([x0, y0, z0], device=device)  # [N, 3]
 
         else:
-            skeleton[x0:x1, y0:y1, z0:z1][ind] = 0.  # crop[crop == id]
+            skeleton[x0:x1, y0:y1, z0:z1][mask] = 0.  # crop[crop == id]
 
-        # Recalculate the unlabeled pixels. This is unfortunately the fastest way to do this...
-        unlabeled = skeleton.eq(1).nonzero()
+        # drop all nonzero elements in dict
+        ind_nonzero = ind_nonzero + torch.tensor([x0, y0, z0], device=ind_nonzero.device)
+        for v in ind_nonzero.tolist():
+            unlabeled.pop(str(v), None)  # each nonzero element should be a key in the unlabeled hash map
 
         id += 1
-        pbar.desc = f'ID: {id} | Remaining Skeletons: {unlabeled.shape[0]}'
+        pbar.desc = f'ID: {id} | Remaining Skeletons: {len(unlabeled)}'
         pbar.update(1)
 
     pbar.close()
