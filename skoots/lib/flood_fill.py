@@ -10,11 +10,14 @@ from skimage.morphology import skeletonize as sk_skeletonize
 def efficient_flood_fill(skeleton: Tensor,
                          min_skeleton_size: Optional[int] = 100,
                          skeletonize: bool = False,
-                         device: Optional[Union[str, torch.device]] = 'cpu') -> Tuple[Tensor, Dict[int, Tensor]]:
+                         device: Optional[Union[str, torch.device]] = 'cpu'
+                         ) -> Tuple[Tensor, Dict[int, Tensor]]:
     """
-    get a
+    Efficiently flood fills a skeleton tensor
 
     :param skeleton:
+    :param min_skeleton_size:
+    :param skeletonize:
     :param device:
     :return:
     """
@@ -22,7 +25,7 @@ def efficient_flood_fill(skeleton: Tensor,
     # resulting crop size will be:  [2W, 2H, 2D]
     w, h, d = [550, 550, 50]
 
-    unlabeled = skeleton.eq(1).nonzero()  # Get ALL unlabeled pixels
+    unlabeled = skeleton.eq(1).nonzero()  # Get ALL unlabeled pixels. This is potentially SUPER inefficient...
 
     shape = skeleton.shape  # [X, Y, Z]
 
@@ -30,7 +33,7 @@ def efficient_flood_fill(skeleton: Tensor,
     skeleton_dict = {}
 
     pbar = tqdm()
-    while unlabeled.numel() > 0:
+    while unlabeled.numel() > 0:  # hash map could improve performance...
         ind = torch.randint(unlabeled.shape[0], (1,)).squeeze()
         seed = unlabeled[ind, :].tolist()  # [X, Y ,Z]
 

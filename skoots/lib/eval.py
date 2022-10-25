@@ -154,8 +154,8 @@ def eval(image_path: str) -> None:
 
     c, x, y, z = image.shape
 
-    skeleton = torch.zeros(size=(1, x, y, z))
-    semantic = torch.zeros((1, x, y, z))
+    skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
+    semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -199,7 +199,7 @@ def eval(image_path: str) -> None:
                                                             overlap[0]: -overlap[0],
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
-                                                            :]
+                                                            :].gt(0)
 
             vectors[:,
             x + overlap[0]: x + cropsize[0] - overlap[0],
