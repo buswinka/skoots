@@ -157,6 +157,7 @@ def eval(image_path: str) -> None:
     skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
     semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
+    instance_mask = torch.zeros_like(semantic, dtype=torch.int).cpu()
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
@@ -248,13 +249,11 @@ def eval(image_path: str) -> None:
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
                   vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
 
-
         skeleton, skeleton_dict = efficient_flood_fill(skeleton, skeletonize=True, device='cuda:0')
 
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
                   skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
-    instance_mask = torch.zeros_like(semantic, dtype=torch.int).cpu()
 
     # for k in tqdm(skeleton_dict.keys()):
     #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
@@ -277,7 +276,7 @@ def eval(image_path: str) -> None:
 
 
 if __name__ == '__main__':
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
+    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
+    image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     eval(image_path)
