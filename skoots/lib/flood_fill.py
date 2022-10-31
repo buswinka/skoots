@@ -34,6 +34,12 @@ def efficient_flood_fill(skeleton: Tensor,
     skeleton_dict = {}
 
     pbar = tqdm()
+    """
+    OK WHAT IF WE JUST GET THE NONZERO VALUES FROM CURRENT CROP.
+    then, there is no need to calculate the nonzero for *everything*
+    we only calculate nonzero for everything when the crop contains no nonzero data. 
+    
+    """
     while len(unlabeled) > 0:  # hash map could improve performance...
         # ind = torch.randint(unlabeled.shape[0], (1,)).squeeze()
         key, seed = unlabeled.popitem()

@@ -57,7 +57,6 @@ def crops(image: Tensor,
 
     for i, size in enumerate(crop_size):
         crop_size[i] = crop_size[i] if crop_size[i] < image_shape[i + 1] else image_shape[i + 1]
-        # overlap[i] = overlap[i] if cropsize[i] < image_shape[i+1] else 0
 
 
     assert len(image_shape) - 1 == len(
@@ -65,7 +64,7 @@ def crops(image: Tensor,
                                         f'{overlap=}'
     dim = ['x', 'y', 'z']
     for c, o, d in zip(crop_size, overlap, dim):
-        assert c - o*2 != 0, f'Overlap in {d} dimmension cannot be equal to or larger than crop size... {o*2=} < {c}'
+        assert c - (o*2) != 0, f'Overlap in {d} dimmension cannot be equal to or larger than crop size... {c=} - {o*2=} = {c - (o*2)} < {c}'
 
     # for i in range(image_shape[1] // cropsize[1] + 1):
 

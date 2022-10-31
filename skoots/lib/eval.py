@@ -36,91 +36,6 @@ Instance Segmentation more or less...
 
 """
 
-
-# image_path = '/home/chris/Documents/threeOHC_registered-scaled.tif'
-# image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure 1 - overview/data/single_mito.tif'
-# image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/validation/hide-1_150-201.tif'
-# image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/test/hide001.tif'
-
-@torch.no_grad()
-def get_instance(mask: Tensor,
-                 vectors: Tensor,
-                 skeleton: Tensor,
-                 id: int,
-                 num: Tensor,
-                 thr: float = 0.3,
-                 sigma: Tensor = torch.tensor((5, 5, 5)),
-                 min_instance_volume: int = 183) -> Tensor:
-    """
-    Gets an instance mask of a single object associated with identified Skeleton
-
-
-    Shapes:
-        - mask: :math:`(1, X_{in}, Y_{in}, Z_{in})`
-        - vectors: :math:`(3, X_{in}, Y_{in}, Z_{in})`
-        - skeleton: :math:`(3, N_{j})`
-
-    :param mask: empty mask by which to store all instances
-    :param vectors: Embedding Vectors predicted by a neural network with shape [C=3, X, Y, Z]
-    :param skeleton: Tensor of pixels representing the skeleton of an instance with shape [C=3, N] from *efficient_flood_fill*
-    :param id: ID value of skeleton of interest
-    :param num: anisotropic scaling factors
-    :param thr: instance probability threshold
-    :param min_instance_volume: rejects instances smaller than this param
-
-    :return: Semantic mask of the individual instance
-    """
-
-    # Establish min and max indicies
-    buffer = torch.tensor([50, 50, 10], device=skeleton.device)  # on all sides of the skeleton
-    ind_min = (skeleton - buffer).clamp(0)
-    ind_max = skeleton + buffer
-
-    for i in range(3):  # Clamp this to the vindow...
-        ind_max[:, i] = ind_max[:, i].clamp(0, vectors.shape[i + 1])  # Vector is [3, X, Y, Z]
-
-    ind_min = ind_min.min(0)[0]
-    ind_max = ind_max.max(0)[0]
-
-    # Get a crop of the vectors
-    crop = vectors[:,
-           ind_min[0]:ind_max[0],
-           ind_min[1]:ind_max[1],
-           ind_min[2]:ind_max[2]].unsqueeze(0).cuda()
-
-    mask_crop = mask[
-                ind_min[0]:ind_max[0],
-                ind_min[1]:ind_max[1],
-                ind_min[2]:ind_max[2]].unsqueeze(0).cuda()
-
-    crop = vector_to_embedding(scale=num.cuda(), vector=crop)
-
-    skeleton = skeleton.sub(ind_min)  # Adjust skeleton and put into a dict
-
-    baked = bake_skeleton(masks=mask_crop.add(1).gt(0), skeletons={1: skeleton},
-                          average=True, anisotropy=(1., 1., 5.), device='cuda')
-
-    prob = baked_embed_to_prob(crop, baked.to(crop.device), sigma=sigma.to(crop.device))[0]
-    prob = prob.gt(thr).mul(id).squeeze()
-
-    # Put it back into the mask
-    index = prob == id
-    if torch.sum(index) > min_instance_volume:
-        mask[
-        ind_min[0]:ind_max[0],
-        ind_min[1]:ind_max[1],
-        ind_min[2]:ind_max[2],
-        ][index] = prob[index].cpu().float()
-    else:
-        mask[
-        ind_min[0]:ind_max[0],
-        ind_min[1]:ind_max[1],
-        ind_min[2]:ind_max[2],
-        ][index] = 0
-
-    return mask
-
-
 def eval(image_path: str) -> None:
     scale = -99999
 
@@ -131,26 +46,22 @@ def eval(image_path: str) -> None:
 
     scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
 
-    # if image.max() > 256:
-    #     scale: int = 2 ** 16
-    # elif image.max() <= 256 and image.max() > 1:
-    #     scale = 256
-    # elif image.max() <= 1 and image.max() > 0:
-    #     scale = 1
-
-    image: Tensor = torch.from_numpy(image).float()
+    image: Tensor = torch.from_numpy(image).pin_memory()
     print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
     # Allocate a bunch or things...
-    pad3d = (5, 5, 30, 30, 30, 30)  # Pads last dim first!
-    image = F.pad(image, pad3d, mode='reflect') if image.dtype == torch.float else image
+    if image.dtype == torch.float:
+        pad3d = (5, 5, 30, 30, 30, 30)  # Pads last dim first!
+        image = F.pad(image, pad3d, mode='reflect') if image.dtype == torch.float else image
+    else:
+        pad3d = False
 
     num_tuple = (60, 60, 60 // 5),
     num = torch.tensor(num_tuple)
 
     c, x, y, z = image.shape
 
-    skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
+    skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.int16)
     semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
@@ -187,6 +98,7 @@ def eval(image_path: str) -> None:
             probability_map = out[:, [-1], ...].cpu()
             skeleton_map = out[:, [-2], ...].cpu()
             vec = out[:, 0:3:1, ...].cpu()
+
 
             skeleton[:,
             x + overlap[0]: x + cropsize[0] - overlap[0],
@@ -229,32 +141,33 @@ def eval(image_path: str) -> None:
 
         id = 2
 
-        # In Place for memory efficiency
-        skeleton.mul_(semantic)
         vectors.mul_(semantic)
+        skeleton.mul_(semantic)
 
-        io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
-                  semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
-
-        io.imsave(
-            '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
-            skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
-
-        io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
-                  vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
+        # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
+        #           semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
+        #
+        # io.imsave(
+        #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
+        #     skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
+        #
+        # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
+        #           vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
 
         skeleton, skeleton_dict = efficient_flood_fill(skeleton, skeletonize=True, device='cuda:0')
 
-        io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
-                  skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
+        # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
+        #           skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
     # for k in tqdm(skeleton_dict.keys()):
     #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
 
-
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
     instance_mask = torch.zeros_like(semantic, dtype=torch.int16)
-    iterator = tqdm(crops(vectors, [500, 500, 50], [0, 0, 0]), desc='Assigning Instances:')
+    iterator = tqdm(crops(vectors, crop_size=[500, 500, 50]), desc='Assigning Instances:')
+
+    print(vectors.shape)
+
     for _vec, (x, y, z) in iterator:
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
@@ -274,6 +187,6 @@ def eval(image_path: str) -> None:
 
 if __name__ == '__main__':
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
+    image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
+    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     eval(image_path)
