@@ -45,7 +45,7 @@ def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
     return mesh + vector
 
 
-@torch.jit.script
+@torch.jit.scrip
 def _vec2embed3D(scale: Tensor, vector: Tensor) -> Tensor:
     """
     2D or 3D vector to embedding
@@ -67,7 +67,7 @@ def _vec2embed3D(scale: Tensor, vector: Tensor) -> Tensor:
         torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device)
     ]
 
-    mesh = torch.meshgrid(axis_ind, indexing='ij')
+    mesh: Tuple[Tensor, ...] = torch.meshgrid(axis_ind, indexing='ij')
     mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh: Tensor = torch.cat(mesh, dim=1)
 

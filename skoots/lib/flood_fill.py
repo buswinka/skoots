@@ -90,6 +90,8 @@ def efficient_flood_fill(skeleton: Tensor,
         for v in ind_nonzero.tolist():
             unlabeled.pop(str(v), None)  # each nonzero element should be a key in the unlabeled hash map
 
+        del mask, ind_nonzero
+
         id += 1
         pbar.desc = f'ID: {id} | Remaining Skeletons: {len(unlabeled)}'
         pbar.update(1)

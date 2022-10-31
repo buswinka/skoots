@@ -138,16 +138,12 @@ def eval(image_path: str) -> None:
     # elif image.max() <= 1 and image.max() > 0:
     #     scale = 1
 
-    image: Tensor = torch.from_numpy(image)
+    image: Tensor = torch.from_numpy(image).float()
     print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
-    # image = image.transpose(0, -1).squeeze().unsqueeze(0)
-    # image = torch.clamp(image, 0, 1)
-    image = image.float()
+    # Allocate a bunch or things...
     pad3d = (5, 5, 30, 30, 30, 30)  # Pads last dim first!
-    # pad3d = False
-
-    image = F.pad(image, pad3d, mode='reflect') if pad3d else image
+    image = F.pad(image, pad3d, mode='reflect') if image.dtype == torch.float else image
 
     num_tuple = (60, 60, 60 // 5),
     num = torch.tensor(num_tuple)
@@ -157,13 +153,12 @@ def eval(image_path: str) -> None:
     skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
     semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
-    instance_mask = torch.zeros_like(semantic, dtype=torch.int).cpu()
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
     checkpoint = torch.load(
         '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_17-15-08_CHRISUBUNTU.trch')
-        # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_12-30-49_CHRISUBUNTU.trch')
+    # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_12-30-49_CHRISUBUNTU.trch')
 
     state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
@@ -176,7 +171,7 @@ def eval(image_path: str) -> None:
     model = model.to(device).train()
 
     cropsize = [300, 300, 20]
-    overlap = [60, 60, 5]
+    overlap = [30, 30, 2]
 
     total = skoots.lib.cropper.get_total_num_crops(image.shape, cropsize, overlap)
     iterator = tqdm(crops(image, cropsize, overlap), desc='', total=total)
@@ -238,7 +233,6 @@ def eval(image_path: str) -> None:
         skeleton.mul_(semantic)
         vectors.mul_(semantic)
 
-
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
                   semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
 
@@ -254,21 +248,24 @@ def eval(image_path: str) -> None:
         io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
                   skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
-
     # for k in tqdm(skeleton_dict.keys()):
     #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
 
-    skeleton = skeleton.unsqueeze(0).unsqueeze(0)
 
+    skeleton = skeleton.unsqueeze(0).unsqueeze(0)
+    instance_mask = torch.zeros_like(semantic, dtype=torch.int16)
     iterator = tqdm(crops(vectors, [500, 500, 50], [0, 0, 0]), desc='Assigning Instances:')
     for _vec, (x, y, z) in iterator:
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
-
         _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
-                                                                    embed=_embed).squeeze()
+                                                                 embed=_embed).squeeze()
+
         w, h, d = _inst_maks.shape
-        instance_mask[x:x+w, y:y+h, z:z+d] = _inst_maks
+        print(
+            f'{(x,y,z)=}, {(w,h,d)=}, {_vec.shape=}, {_embed.shape=}, {_inst_maks.shape=}, {skeleton.shape=}, {instance_mask.shape=}')
+
+        instance_mask[x:x + w, y:y + h, z:z + d] = _inst_maks
 
     print(instance_mask.unique().shape[0] - 1, ' Unique mito')
     io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/instance_mask.tif',
@@ -277,6 +274,6 @@ def eval(image_path: str) -> None:
 
 if __name__ == '__main__':
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
+    # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
+    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     eval(image_path)
