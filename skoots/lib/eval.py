@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from skoots.lib.embedding_to_prob import baked_embed_to_prob
 from skoots.lib.vector_to_embedding import vector_to_embedding
-from skoots.lib.flood_fill import efficient_flood_fill
+from skoots.lib.flood_fill import efficient_flood_fill, efficient_flood_fill_v3, efficient_flood_fill_v2
 from skoots.lib.cropper import crops
 from skoots.lib.skeleton import bake_skeleton
 from skoots.lib.morphology import binary_erosion, binary_dilation
@@ -62,7 +62,7 @@ def eval(image_path: str) -> None:
     c, x, y, z = image.shape
 
     skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.int16)
-    semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
+    # semantic = torch.zeros((1, x, y, z), dtype=torch.uint8)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -96,8 +96,13 @@ def eval(image_path: str) -> None:
                 out = model(slice.div(scale).float().cuda())
 
             probability_map = out[:, [-1], ...].cpu()
-            skeleton_map = out[:, [-2], ...].cpu()
+            skeleton_map = out[:, [-2], ...].float()
+
+            skeleton_map = skeleton_map.cpu()
             vec = out[:, 0:3:1, ...].cpu()
+
+            vec = vec * probability_map.gt(0.5)
+            skeleton_map = skeleton_map * probability_map.gt(0.5)
 
 
             skeleton[:,
@@ -107,7 +112,7 @@ def eval(image_path: str) -> None:
                                                             overlap[0]: -overlap[0],
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
-                                                            :].gt(0)
+                                                            :].gt(0.8)
 
             vectors[:,
             x + overlap[0]: x + cropsize[0] - overlap[0],
@@ -117,53 +122,50 @@ def eval(image_path: str) -> None:
                                                             overlap[1]: -overlap[1],
                                                             overlap[2]: -overlap[2]
                                                             :].half()
-            semantic[:,
-            x + overlap[0]: x + cropsize[0] - overlap[0],
-            y + overlap[1]: y + cropsize[1] - overlap[1],
-            z + overlap[2]: z + cropsize[2] - overlap[2]] = probability_map[0, :,
-                                                            overlap[0]: -overlap[0],
-                                                            overlap[1]: -overlap[1],
-                                                            overlap[2]: -overlap[2]
-                                                            :].gt(0.5)
+            # semantic[:,
+            # x + overlap[0]: x + cropsize[0] - overlap[0],
+            # y + overlap[1]: y + cropsize[1] - overlap[1],
+            # z + overlap[2]: z + cropsize[2] - overlap[2]] = probability_map[0, :,
+            #                                                 overlap[0]: -overlap[0],
+            #                                                 overlap[1]: -overlap[1],
+            #                                                 overlap[2]: -overlap[2]
+            #                                                 :].gt(0.5)
 
             iterator.desc = f'Evaluating slice at: [x{x}:y{y}:z{z}]'
 
         # _x, _y, _z
         if pad3d:
             skeleton = skeleton[0, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
-            semantic = semantic[0, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
+            # semantic = semantic[0, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
             vectors = vectors[:, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
 
         else:
             skeleton = skeleton[0, ...]
-            semantic = semantic[0, ...]
+            # semantic = semantic[0, ...]
             vectors = vectors[:, ...]
 
         id = 2
 
-        vectors.mul_(semantic)
-        skeleton.mul_(semantic)
-
         # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
         #           semantic.mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
         #
-        # io.imsave(
-        #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
-        #     skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
-        #
+        io.imsave(
+            '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
+            skeleton.squeeze().cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
+
         # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.tif',
         #           vectors.mul(2).div(2).mul(255).int().cpu().numpy().transpose(-1, 1, 2, 0))
 
-        skeleton, skeleton_dict = efficient_flood_fill(skeleton, skeletonize=True, device='cuda:0')
+        skeleton, _ = efficient_flood_fill_v3(skeleton, skeletonize=True, device='cuda:0')
 
-        # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
-        #           skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
+        io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
+                  skeleton.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
     # for k in tqdm(skeleton_dict.keys()):
     #     instance_mask = get_instance(instance_mask, vectors, skeleton_dict[k], k, num)
 
+    instance_mask = torch.zeros_like(skeleton, dtype=torch.int16)
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
-    instance_mask = torch.zeros_like(semantic, dtype=torch.int16)
     iterator = tqdm(crops(vectors, crop_size=[500, 500, 50]), desc='Assigning Instances:')
 
     print(vectors.shape)
@@ -175,8 +177,8 @@ def eval(image_path: str) -> None:
                                                                  embed=_embed).squeeze()
 
         w, h, d = _inst_maks.shape
-        print(
-            f'{(x,y,z)=}, {(w,h,d)=}, {_vec.shape=}, {_embed.shape=}, {_inst_maks.shape=}, {skeleton.shape=}, {instance_mask.shape=}')
+        # print(
+        #     f'{(x,y,z)=}, {(w,h,d)=}, {_vec.shape=}, {_embed.shape=}, {_inst_maks.shape=}, {skeleton.shape=}, {instance_mask.shape=}')
 
         instance_mask[x:x + w, y:y + h, z:z + d] = _inst_maks
 
