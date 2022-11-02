@@ -5,8 +5,7 @@ from tqdm import tqdm
 from typing import Tuple, Optional, Union, Dict, List
 
 from skimage.morphology import skeletonize as sk_skeletonize
-from skoots.lib.cropper import crops
-from skoots.lib.merge import get_adjacent_labels
+from skoots.lib.cropper import crops, get_total_num_crops
 
 from scipy.ndimage import label
 
@@ -14,222 +13,19 @@ from numba import njit, prange
 import numpy as np
 
 
-def efficient_flood_fill(skeleton: Tensor,
-                         min_skeleton_size: Optional[int] = 100,
-                         skeletonize: bool = False,
-                         device: Optional[Union[str, torch.device]] = 'cpu'
-                         ) -> Tuple[Tensor, Dict[int, Tensor]]:
+def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     """
-    Efficiently flood fills a skeleton tensor
+    Efficiently floods a binary skeleton mask in place by first flood filling small regions,
+    then merging connected components later. Avoids memory copies when possible. Returns a skeleton mask where
+    each connected component has a unique label, however these labels may not be sequential.
+    I.e. unique(skeleton) -> [4, 16, 23, 24, 96]
 
-    :param skeleton:
-    :param min_skeleton_size:
-    :param skeletonize:
-    :param device:
-    :return:
+    :param skeleton: binary skeleton mask to flood fill
+    :return: Flood filled tensor
     """
-    # This is the w/h/d on EITHER side of a center seed point.
-    # resulting crop size will be:  [2W, 2H, 2D]
-    w, h, d = [550, 550, 50]
-
-    unlabeled: list = skeleton.squeeze().eq(
-        1).nonzero().tolist()  # Get ALL unlabeled pixels. This is potentially SUPER inefficient...
-    unlabeled: Dict[str, Tensor] = {str(x): x for x in unlabeled}  # convert to hash table for memory efficiency
-
-    shape = skeleton.shape  # [X, Y, Z]
-
-    id = 2
-    skeleton_dict = {}
-
-    pbar = tqdm()
-    """
-    OK WHAT IF WE JUST GET THE NONZERO VALUES FROM CURRENT CROP.
-    then, there is no need to calculate the nonzero for *everything*
-    we only calculate nonzero for everything when the crop contains no nonzero data. 
-    
-    """
-    while len(unlabeled) > 0:  # hash map could improve performance...
-        # ind = torch.randint(unlabeled.shape[0], (1,)).squeeze()
-        key, seed = unlabeled.popitem()
-        # seed = unlabeled[ind, :].tolist()  # [X, Y ,Z]
-
-        # Get the indices of each crop. Respect the boundaries of the image
-        x0 = torch.tensor(seed[0] - w).clamp(0, shape[0])
-        x1 = torch.tensor(seed[0] + w).clamp(0, shape[0])
-
-        y0 = torch.tensor(seed[1] - h).clamp(0, shape[1])
-        y1 = torch.tensor(seed[1] + h).clamp(0, shape[1])
-
-        z0 = torch.tensor(seed[2] - d).clamp(0, shape[2])
-        z1 = torch.tensor(seed[2] + d).clamp(0, shape[2])
-
-        # Create a crop which to perform the flood fill. This helps with speed
-        # cannot necessarily be sure that an object is 100% encompassed by the window
-        # The window is pretty large though... It works will in practice.
-        crop = skeleton[x0:x1, y0:y1, z0:z1]
-
-        # The seed values we calculated before need to be corrected to this local window
-        seed = tuple(int(s - offset) for s, offset in zip(seed, [x0, y0, z0]))
-
-        # Fill the image with the new id value by a flood_fill algorithm
-        mask = torch.from_numpy(flood(crop.cpu().numpy(), seed_point=seed)).to(device)
-
-        # Assign the new pixels to the original tensor
-        # ind = crop == id
-        ind_nonzero = mask.nonzero()
-
-        if ind_nonzero.shape[0] > min_skeleton_size:
-            skeleton[x0:x1, y0:y1, z0:z1][mask] = id
-
-            # Experimental
-            if skeletonize:
-                # scale_factor = 5
-                # a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
-                # _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
-                _skeleton = torch.from_numpy(sk_skeletonize(mask.cpu().numpy())).nonzero().to(device)
-
-                if _skeleton.numel() == 0:
-                    _skeleton = ind_nonzero  # If there are no skeletons, just return mean
-
-            else:
-                _skeleton = ind_nonzero
-
-            skeleton_dict[id] = _skeleton.to(device) + torch.tensor([x0, y0, z0], device=device)  # [N, 3]
-
-        else:
-            skeleton[x0:x1, y0:y1, z0:z1][mask] = 0.  # crop[crop == id]
-
-        # drop all nonzero elements in dict
-        ind_nonzero = ind_nonzero + torch.tensor([x0, y0, z0], device=ind_nonzero.device)
-        for v in ind_nonzero.tolist():
-            unlabeled.pop(str(v), None)  # each nonzero element should be a key in the unlabeled hash map
-
-        del mask, ind_nonzero
-
-        id += 1
-        pbar.desc = f'ID: {id} | Remaining Skeletons: {len(unlabeled)}'
-        pbar.update(1)
-
-    pbar.close()
-
-    return skeleton, skeleton_dict
-
-
-def efficient_flood_fill_v2(skeleton: Tensor,
-                            min_skeleton_size: Optional[int] = 100,
-                            skeletonize: bool = False,
-                            device: Optional[Union[str, torch.device]] = 'cpu'
-                            ) -> Tuple[Tensor, Dict[int, Tensor]]:
-    """
-    Efficiently flood fills a skeleton tensor
-
-    :param skeleton:
-    :param min_skeleton_size:
-    :param skeletonize:
-    :param device:
-    :return:
-    """
-    # This is the w/h/d on EITHER side of a center seed point.
-    # resulting crop size will be:  [2W, 2H, 2D]
-    w, h, d = [300, 300, 60]
-
-    nonzero: Tensor = skeleton.squeeze().eq(1).nonzero()
-    shape = skeleton.shape  # [X, Y, Z]
-
-    id = 2
-    skeleton_dict = {}
-
-    pbar = tqdm()
-    """
-    OK WHAT IF WE JUST GET THE NONZERO VALUES FROM CURRENT CROP.
-    then, there is no need to calculate the nonzero for *everything*
-    we only calculate nonzero for everything when the crop contains no nonzero data. 
-    """
-    while nonzero.numel() > 0:  # hash map could improve performance...
-        # key, seed = unlabeled.popitem()
-        seed = nonzero[0, :].tolist()  # [x, y, z]
-        # seed = unlabeled[ind, :].tolist()  # [X, Y ,Z]
-
-        # Get the indices of each crop. Respect the boundaries of the image
-        x0 = torch.tensor(seed[0] - w).clamp(0, shape[0])
-        x1 = torch.tensor(seed[0] + w).clamp(0, shape[0])
-
-        y0 = torch.tensor(seed[1] - h).clamp(0, shape[1])
-        y1 = torch.tensor(seed[1] + h).clamp(0, shape[1])
-
-        z0 = torch.tensor(seed[2] - d).clamp(0, shape[2])
-        z1 = torch.tensor(seed[2] + d).clamp(0, shape[2])
-
-        # Create a crop which to perform the flood fill. This helps with speed
-        # cannot necessarily be sure that an object is 100% encompassed by the window
-        # The window is pretty large though... It works will in practice.
-        """ 
-        HYPOTHESIS: This is super slow... 
-        
-        Better to do a crop n merge type of thing? 
-        
-        """
-        crop = skeleton[x0:x1, y0:y1, z0:z1]
-
-        # The seed values we calculated before need to be corrected to this local window
-        seed = tuple(int(s - offset) for s, offset in zip(seed, [x0, y0, z0]))
-
-        # Fill the image with the new id value by a flood_fill algorithm
-        mask = torch.from_numpy(flood(crop.cpu().numpy(), seed_point=seed)).to(device)
-
-        # Assign the new pixels to the original tensor
-        # ind = crop == id
-        ind_nonzero = mask.nonzero()
-
-        if ind_nonzero.shape[0] > min_skeleton_size:
-            skeleton[x0:x1, y0:y1, z0:z1][mask] = id
-
-            # Experimental
-            if skeletonize:
-                # scale_factor = 5
-                # a = torch.tensor((scale_factor, scale_factor, 1), device=ind.device).view(1, 3)
-                # _skeleton = torch.nonzero(ind[::scale_factor, ::scale_factor, :]) * a
-                _skeleton = torch.from_numpy(sk_skeletonize(mask.cpu().numpy())).nonzero().to(device)
-
-                if _skeleton.numel() == 0:
-                    _skeleton = ind_nonzero  # If there are no skeletons, just return mean
-
-            else:
-                _skeleton = ind_nonzero
-
-            skeleton_dict[id] = _skeleton.to(device) + torch.tensor([x0, y0, z0], device=device)  # [N, 3]
-
-        else:
-            skeleton[x0:x1, y0:y1, z0:z1][mask] = 0.  # crop[crop == id]
-
-        nonzero = skeleton[x0:x1, y0:y1, z0:z1].eq(1).nonzero() + torch.tensor([x0, y0, z0])
-        # nonzero = skeleton.eq(1).nonzero()
-
-        if nonzero.numel() == 0:
-            print('had to calculate a huge nonzero')
-            nonzero = skeleton.eq(1).nonzero()
-
-        del mask, ind_nonzero
-
-        id += 1
-        pbar.desc = f'ID: {id} | Remaining Skeletons: {len(nonzero)}'
-        pbar.update(1)
-
-    pbar.close()
-
-    return skeleton, skeleton_dict
-
-
-def efficient_flood_fill_v3(
-        skeleton: Tensor,
-        min_skeleton_size: Optional[int] = 100,
-        skeletonize: bool = False,
-        device: Optional[Union[str, torch.device]] = 'cpu'
-) -> Tuple[Tensor, Dict[int, Tensor]]:
     skeleton = skeleton.unsqueeze(0) if skeleton.ndim == 3 else skeleton
-
-    # Crop size has to be exactly identical to eval!!!
-    iterator = tqdm(crops(skeleton, crop_size=[300, 300, 10]), desc='Assigning Instances:')
+    total = get_total_num_crops(skeleton.shape, crop_size=[1000, 1000, 100], overlap=[0,0,0])
+    iterator = tqdm(crops(skeleton, crop_size=[1000, 1000, 200]), desc='Flood-filling small crops: ')
     max_id = 1
     skeletons_dict = {}
 
@@ -237,40 +33,37 @@ def efficient_flood_fill_v3(
     seams_y = []
     seams_z = []
 
+    # Iterate over crops of the skeleton to perform a flood fill
     for crop, (x, y, z) in iterator:
         seams_x = seams_x + [x] if x not in seams_x else seams_x
         seams_y = seams_y + [y] if y not in seams_y else seams_y
         seams_z = seams_z + [z] if z not in seams_z else seams_z
 
-        # print(f'{skeleton.shape=}, {(x,y,z)=}')
+        # crop should only contain ones and zeros and be an int. Not guaranteed by skoots.lib.cropper.crops
         crop = crop.squeeze().gt(0).int()
-        crop, max_id, _skeletons = flood_all(crop, max_id + 1)
+
+        crop, max_id = flood_all(crop, max_id + 1)  # max_id is the previous max - update by 1!
         w, h, d = crop.shape
         skeleton[0, x:x + w, y:y + h, z:z + d] = crop
 
+    # We now check each crop seam for double labeled instances. Here, a collision is the same object having label (x)
+    # in one crop, then label (y) in another.  We must check in all dims, x, y, and z.
+
+    print(f'[      ] Detecting collisions...', end='')
     # X
-    collisions = []
+    collisions: List[Tuple[int, int]] = []
     for x in seams_x:
         if x > 0:
             slice_0 = skeleton[0, x, :, :]
             slice_1 = skeleton[0, x - 1, :, :]
-            # torch.save(slice_0, '/home/chris/Desktop/slice_0.trch')
-            # torch.save(slice_1, '/home/chris/Desktop/slice_1.trch')
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
-            # print(collisions)
-            # raise ValueError
-            # for a, b in collisions:
-            #     if b == 5 and a == 96:
-            #         print('WRONG: x', x)
+
     # Y
     for y in seams_y:
         if y > 0:
             slice_0 = skeleton[0, :, y, :]
             slice_1 = skeleton[0, :, y-1, :]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
-            for a, b in collisions:
-                if b == 5 and a == 96:
-                    print('WRONG: y', y)
 
     # Z
     for z in seams_z:
@@ -278,25 +71,12 @@ def efficient_flood_fill_v3(
             slice_0 = skeleton[0, :, :, z]
             slice_1 = skeleton[0, :, :, z - 1]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
-            for a, b in collisions:
-                if b == 5 and a == 96:
-                    print('WRONG: z', z)
 
-    for a, b in collisions:
-        if a in [73, 5, 28, 101, 9, 81]:
-            print(a, b)
+    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
-
-    # CHECK EVERYTHING AGAIN HERE! some collisions for a graphs where more than 2 labels are connected
-    """
-    1. check all borders and find all connected components
-    2. construct graph of all nodes 
-    3. find all closed paths
-    4. loop over all pixels in the final image and replace
-        - do this by modifying values of a sparse tensor...
-        
-    """
-    graph = {}
+    # Multiple collisions for each id value may exist, so we construct a graph of id values
+    print(f'[      ] Constructing collision graph...', end='')
+    graph: Dict[int, List[int]] = {}
     for (a, b) in collisions:
         if a not in graph:
             graph[a] = [b]
@@ -306,40 +86,38 @@ def efficient_flood_fill_v3(
             graph[b] = [a]
         else:
             graph[b].append(a)
+    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
-        if a == 96 or b == 96:
-            print('GRAPH CREATION:', a, b)
-
+    # Each skeleton, of multiple potential id values, forms a connected component in the graph
+    print(f'[      ] identifying connected components...', end='')
     cc: List[List[int]] = connected_components(graph)
+    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
 
-    print('graph!')
-    for k,v in graph.items():
-        print(k, v)
-
-
-    print('connected components!')
-    for _cc in cc:
-        print(_cc)
-
+    # We need to decide which node of the graph, (id value of a skeleton) will represent the rest of the skeleton
+    # For simplicity we just choose the last value.
     to_replace: List[int] = []
     replace_with: List[int] = []
-
     for component in cc:
         # we always replace with the LAST value of a bunch of connected components
         a = component.pop(-1)
         replace_with.extend([a for _ in component])
         to_replace.extend(component)
 
-    collisions = [(a, b) for a, b in zip(to_replace, replace_with)]
-    skeleton = replace(skeleton, collisions)
+    # for every pixel at position j, if it is identical to a value at position i in two_replace,
+    # we replace pixel j with the new value: replace_with[i]
 
+    collisions = [(a, b) for a, b in zip(to_replace, replace_with)]  # replace needs a set of collisions
 
-    return skeleton.squeeze(0), skeletons_dict
+    print(f'[      ] Performing in place replacement of collisions...', end='')
+    skeleton = replace(skeleton, collisions)  # in place replace
+    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+
+    return skeleton.squeeze(0)
 
 
 def flood_all(x: Tensor, id: int) -> Tuple[Tensor, int, Dict[int, Tensor]]:
     """
-    Floods a crop of a larger image
+    Finds all features (connected components in an ndarray) and gives it a unique label from 1 to N for N components
 
     :param x: torch.bool tensor
     :param id: previous max id value
@@ -348,17 +126,15 @@ def flood_all(x: Tensor, id: int) -> Tuple[Tensor, int, Dict[int, Tensor]]:
     x = x.gt(0).int()
 
     mask, max_id = label(input=x.cpu().numpy())
-    # print(f'FLOOD: {np.unique(mask)=}, {id=},', end='')
     mask = torch.from_numpy(mask).to(torch.int16)
 
     mask = mask + x.mul(id)
-    # print(f'after: {mask.max().item()=}, {mask[mask != 0].min().item()=}')
 
-    return mask, mask.max(), None
+    return mask, mask.max()
 
 
 def dfs(connected: List[int], node: int, graph: Dict[int, List[int]], visited: Dict[int, bool]) -> List[int]:
-    """ depth first search """
+    """ depth first search for finding connected components of a graph """
     visited[node] = True
     connected.append(node)
     for n in graph[node]:
@@ -369,9 +145,8 @@ def dfs(connected: List[int], node: int, graph: Dict[int, List[int]], visited: D
 
 def connected_components(graph: Dict[int, List[int]]) -> List[List[int]]:
     """
-    find all connected components in a graph
-    iterative depth first search
-    i dont know how to do this...
+    Finds all connected components in a graph of id values by performing depth
+    first search.
 
     :param graph: input graph where each key is a node, and each value is a list of edges
     :return: list of all connected notes
@@ -392,7 +167,7 @@ def _in_place_replace(x: np.ndarray, to_replace: np.ndarray, replace_with: np.nd
     """
     Performs an in place replacement of values in tensor x.
 
-    checks each loaction in x for a value in to_replace. if a value is in to_replace, the value is
+    Checks each location in x for a value in to_replace. if a value is in to_replace, the value is
     swapped with the associated value in replace_with.
 
     :param x: input nd.array
@@ -404,9 +179,12 @@ def _in_place_replace(x: np.ndarray, to_replace: np.ndarray, replace_with: np.nd
     assert x.ndim == 1, 'input tensor must be reveled'
 
     for i in prange(x.shape[0]):
-        ind = to_replace == x[i]
-        if np.any(ind):
-            x[i] = replace_with[ind][0]
+        # ind = to_replace == x[i]
+        # if np.any(ind):
+        for j, v in enumerate(to_replace):
+            if x[i] == v:
+                x[i] = replace_with[j] #replace_with[ind][0]
+                break  # presumably most of the time we'll hit the actual value much sooner...
 
 
 def replace(x: Tensor, collisions: List[Tuple[int, int]]) -> Tensor:
@@ -439,6 +217,34 @@ def replace(x: Tensor, collisions: List[Tuple[int, int]]) -> Tensor:
 
     return torch.from_numpy(x).view(shape)
 
+
+def get_adjacent_labels(
+        x: Tensor, y: Tensor
+                        ) ->List[Tuple[int, int]]:
+    """
+    calculates which masks of a signle object have two labels (due to the border)
+
+    :param x:
+    :param y:
+    :return:
+    """
+
+    # Could ideally use the cantor pairing function but might overflow???
+    # this seems to be safe and memory efficient
+    z0 = (x + y).unique().tolist()
+    z1 = (x * y).unique().tolist()
+
+    identical = []
+
+    for _x in x.unique():
+        for _y in y.unique():
+            if _x == 0 or _y == 0:
+                continue
+
+            if (_x + _y) in z0 and (_x * _y) in z1:
+                identical.append((_x.item(), _y.item()))
+    # identical = identical if len(identical) > 0 else None
+    return identical
 
 if __name__ == '__main__':
     graph = {

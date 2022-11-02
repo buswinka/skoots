@@ -12,6 +12,9 @@ def get_adjacent_labels(
     :param y:
     :return:
     """
+
+    # Could ideally use the cantor pairing function but might overflow???
+    # this seems to be safe and memory efficient
     z0 = (x + y).unique().tolist()
     z1 = (x * y).unique().tolist()
 
