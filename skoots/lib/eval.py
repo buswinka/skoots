@@ -188,7 +188,7 @@ def eval(image_path: str) -> None:
 
 
 if __name__ == '__main__':
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
+    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
+    # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     eval(image_path)
