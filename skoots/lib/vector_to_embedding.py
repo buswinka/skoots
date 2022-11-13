@@ -46,7 +46,7 @@ def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
 
 
 @torch.jit.script
-def _vec2embed3D(scale: Tensor, vector: Tensor) -> Tensor:
+def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     """
     2D or 3D vector to embedding
 
@@ -54,6 +54,7 @@ def _vec2embed3D(scale: Tensor, vector: Tensor) -> Tensor:
 
     :param scale: [N=2/3]
     :param vector: [B, C, X, Y, Z?]
+    :param n: number of times to apply vectors
     :return:
     """
 
@@ -73,9 +74,23 @@ def _vec2embed3D(scale: Tensor, vector: Tensor) -> Tensor:
 
     vector = vector.mul(num.view(newshape))
 
+    for _ in range(n - 1):  # Only executes if n > 1
+        # convert to index.
+        index = mesh.round()
+        b, c, x, y, z = index.shape
+        for i, k in enumerate([x, y, z]):
+            index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
+
+        index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
+
+        index = index.clamp(0, x * y * z - 1).long()
+        # mesh = mesh + vector.flatten(start_dim=2)[]
+        for i in range(c):
+            mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
+
     return mesh + vector
 
-def vector_to_embedding(scale: Tensor, vector: Tensor) -> Tensor:
+def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
     """
     Converts a 2D or 3D vector field to a spatial embedding by adding the vector at any position to its own position.
 
@@ -105,7 +120,7 @@ def vector_to_embedding(scale: Tensor, vector: Tensor) -> Tensor:
     """
 
     # assert vector.ndim in [4, 5], f'Vector must be a 4D or 5D tensor, not {vector.ndim}D: {vector.shape=}'
-    return _vec2embed3D(scale, vector) if vector.ndim == 5 else _vec2embed2D(scale, vector)
+    return _vec2embed3D(scale, vector, N) if vector.ndim == 5 else _vec2embed2D(scale, vector)
 
 
 def vec2embedND(scale, vector):
