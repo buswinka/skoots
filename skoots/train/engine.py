@@ -50,6 +50,7 @@ def engine(
         verbose=False,
         distributed=True,
         mixed_precision=False,
+        n_warmup: int = 100,
         force=False) -> Tuple[OrderedDict, OrderedDict, List[float]]:
 
     if verbose and rank == 0:
@@ -83,7 +84,7 @@ def engine(
     for images, masks, skeleton, skele_masks, baked in train_data:
         pass
 
-    warmup_range = trange(100, desc = 'Warmup: {}')
+    warmup_range = trange(n_warmup, desc = 'Warmup: {}')
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
 

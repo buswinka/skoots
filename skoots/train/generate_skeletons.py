@@ -27,7 +27,7 @@ def save_train_test_split(mask: Tensor, skeleton: Dict[int, Tensor], z_split: in
     # train
     _mask = mask[..., 0:z_split+1:]
 
-    assert 486 in _mask.unique()
+    # assert 486 in _mask.unique()
 
     _skel = {}
     for u in _mask.unique():
@@ -74,11 +74,18 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
                                size=torch.tensor([x, y, z]).mul(scale).float().round().int().tolist(),
                                mode='nearest').squeeze().cuda().int()
 
-    assert torch.allclose(unique.cuda(), torch.unique(large_mask))
+    for u in unique:
+        assert u in  large_mask.unique().tolist(), u
+
+    for u in large_mask.unique().tolist():
+        assert u in  unique.tolist(), u
+
+    assert torch.allclose(unique.cuda(), torch.unique(large_mask)), f'{unique=}, {large_mask.unique()=}'
 
     # large_mask = mask
 
-    unique = torch.unique(large_mask)
+    unique, counts = torch.unique(large_mask, return_counts=True)
+
     output = {}
 
     for id in tqdm(unique):
@@ -124,6 +131,7 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
 
         assert output[int(id)].shape[0] > 0 and output[
             int(id)].ndim > 1, f'{temp.nonzero().shape=}, {lower=} {id}, {output[int(id)].shape}'
+
 
     return output
 

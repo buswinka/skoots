@@ -18,7 +18,7 @@ import torch.nn as nn
 
 """
 ASSUMPTIONS: 
-    - Model predicts spatially accurate vector strengths. Ie. 1 in a vector is 60*(0.085nm)
+    - Model predicts spatially accurate vector strengths. Ie. 2 in a vector is 60*(0.085nm)
     - Vector Scale Factor turns 1,1,1 -> 60 60 12
     - Sigma is the spatial correction factor, which can vary between XYZ. Sigma represents distance in PX space
     - Closest Skeleton must take into account SPATIAL distance, not px distance

@@ -100,11 +100,14 @@ def bake_skeleton(masks: Tensor,
         baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skel[0, ind, :].float().T
 
     baked = average_baked_skeletons(baked.unsqueeze(0)).squeeze(0) if average else baked
+    baked[baked==0] = -100 # otherwise 0,0,0 is positive... weird...
 
     return baked
 
 
-def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) -> Tensor:
+def skeleton_to_mask(skeletons: Dict[int, Tensor],
+                     shape: Tuple[int, int, int],
+                     kernel_size: Tuple[int, int, int] = (15,15,1)) -> Tensor:
     """
     Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or whatever...
 
@@ -135,7 +138,7 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor], shape: Tuple[int, int, int]) 
     skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
 
     for _ in range(2):  # this might make things a bit better on the skeleton side of things...
-        skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0.5).float()), [15, 15, 1], [0.8, 0.8, 0.8])
+        skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0.5).float()), kernel_size, [0.8, 0.8, 0.8])
 
     return skeleton_mask.squeeze(0)
 

@@ -86,10 +86,13 @@ class dataset(Dataset):
 
             for i, (k, v) in enumerate(skeleton.items()):
                 if v.numel() == 0:
-                    skeleton[k] = centroids[i, :].unsqueeze(0)
+                    raise ValueError(f'{f} instance label {k} has {v.numel()=}')
 
             skeleton = {int(k): v for k, v in skeleton.items()}
 
+            for u in masks.unique():
+                if int(u) == 0: continue
+                assert int(u) in skeleton, f'{f}, {u}'
 
             self.skeletons.append(skeleton)
             self.baked_skeleton.append(None)
@@ -137,6 +140,15 @@ class dataset(Dataset):
     def cpu(self):
         self.to('cpu')
         return self
+
+
+    def pin_memory(self):
+        """
+        It is faster to do transforms on cuda, and if your GPU is big enough, everything can live there!!!
+        """
+        self.image = [x.pin_memory() for x in self.image]
+        self.masks = [x.pin_memory() for x in self.masks]
+        self.skeletons = [{k: v.pin_memory() for (k, v) in x.items()} for x in self.skeletons]
 
 
 class BackgroundDataset(Dataset):
@@ -254,7 +266,7 @@ class MultiDataset(Dataset):
         try:
             return self.datasets[i][item - _offset]
         except Exception:
-            print(i, _offset, item - _offset, item, len(self.datasets[i]), self.datasets[i].files[item])
+            print(i, _offset, item - _offset, item, len(self.datasets[i]))
             raise RuntimeError
 
     def to(self, device: str):

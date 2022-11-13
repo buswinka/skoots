@@ -8,6 +8,7 @@ from skoots.lib.flood_fill import efficient_flood_fill
 from skoots.lib.cropper import crops
 from skoots.lib.skeleton import bake_skeleton
 from skoots.lib.morphology import binary_erosion, binary_dilation
+import os.path
 
 import skimage.io as io
 from tqdm import tqdm
@@ -49,7 +50,7 @@ def eval(image_path: str,
 
     scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
 
-    image: Tensor = torch.from_numpy(image).pin_memory()
+    image: Tensor = torch.from_numpy(image.astype(np.int32)).pin_memory()
     print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
     # Allocate a bunch or things...
@@ -59,7 +60,7 @@ def eval(image_path: str,
     else:
         pad3d = False
 
-    num_tuple = (60, 60, 60 // 5),
+    num_tuple = (40, 40, 40 // 5)
     num = torch.tensor(num_tuple)
 
     c, x, y, z = image.shape
@@ -75,13 +76,13 @@ def eval(image_path: str,
     state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
     model_constructor = get_constructor('unext', spatial_dim=3)  # gets the model from a name...
-    backbone = model_constructor(in_channels=1, out_channels=32, dims=[32, 64, 128, 64, 32])
+    backbone = model_constructor(in_channels=1, out_channels=16, dims=[16,32,64,32,16])
     model = SpatialEmbedding(
         backbone=backbone
     )
     model.load_state_dict(state_dict=state_dict)
     model = model.to(device).train()
-    model = torch.jit.optimize_for_inference(torch.jit.script(model))
+    # model = torch.jit.optimize_for_inference(torch.jit.script(model))
 
     cropsize = [300, 300, 20]
     overlap = [30, 30, 2]
@@ -149,8 +150,8 @@ def eval(image_path: str,
 
 
     # io.imsave is memory costly when saving large tensors... :(
-    torch.save(vectors, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.trch')
-    torch.save(skeleton, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.trch')
+    torch.save(vectors, os.path.split(image_path)[0] + '/vectors.trch')
+    torch.save(skeleton, os.path.split(image_path)[0] + '/skeleton_unlabeled.trch')
 
     # io.imsave(
     #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
@@ -161,7 +162,7 @@ def eval(image_path: str,
     # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
     #           skeleton.cpu().numpy().transpose(2, 0, 1))
 
-    torch.save(skeleton, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.trch')
+    torch.save(skeleton, os.path.split(image_path)[0] + '/skeleton.trch')
 
     instance_mask = torch.zeros_like(skeleton, dtype=torch.int16)
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
@@ -182,15 +183,14 @@ def eval(image_path: str,
 
     del skeleton, vectors  # explicitly delete unnecessary tensors for memory
 
-    io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/instance_mask.tif',
-              instance_mask.cpu().numpy().transpose(2, 0, 1))
+    io.imsave(os.path.split(image_path)[0] + '/instance_mask.tif',
+              instance_mask.cpu().numpy().astype(np.uint16).transpose(2, 0, 1))
 
 
 if __name__ == '__main__':
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
     # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate/hide_validate.tif'
-    # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
+    image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/cell_apex-1.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure X6X  - Whole image analysis/crop.tif'

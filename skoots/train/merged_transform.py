@@ -413,11 +413,11 @@ def merged_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] = No
     data_dict['masks'] = masks
     data_dict['skeletons'] = skeletons
 
-    baked: Tensor = bake_skeleton(masks, skeletons, anisotropy=[1.0, 1.0, 15.0], average=True, device=DEVICE)
+    baked: Tensor = bake_skeleton(masks, skeletons, anisotropy=[1.0, 1.0, 10.0], average=True, device=DEVICE)
     data_dict['baked-skeleton']: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
-    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z))
+    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z), kernel_size=(3,3,1))
 
     return data_dict
 
