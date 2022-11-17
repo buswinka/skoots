@@ -145,7 +145,7 @@ def engine(
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
                 _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) #+ skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
-                loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 100 else 0) * _loss_skeleton)
+                loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 10 else 0) * _loss_skeleton)
 
                 if torch.isnan(loss):
                     print(f'Found NaN value in loss.\n\tLoss Embed: {_loss_embed}\n\tLoss Probability: {_loss_prob}')

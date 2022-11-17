@@ -6,6 +6,7 @@ from skoots.lib.embedding_to_prob import baked_embed_to_prob
 from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.lib.flood_fill import efficient_flood_fill
 from skoots.lib.cropper import crops
+from skoots.lib.morphology import binary_dilation
 from skoots.lib.skeleton import bake_skeleton
 from skoots.lib.morphology import binary_erosion, binary_dilation
 import os.path
@@ -40,6 +41,7 @@ Instance Segmentation more or less...
 
 @torch.inference_mode()  # disables autograd and reference counting for SPEED
 def eval(image_path: str,
+         num_tuple = (60, 60, 60//5),
          checkpoint_path: str = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_17-15-08_CHRISUBUNTU.trch') -> None:
     scale = -99999
 
@@ -60,7 +62,7 @@ def eval(image_path: str,
     else:
         pad3d = False
 
-    num_tuple = (40, 40, 40 // 5)
+    # num_tuple = (60, 60, 60 // 5)
     num = torch.tensor(num_tuple)
 
     c, x, y, z = image.shape
@@ -171,7 +173,7 @@ def eval(image_path: str,
 
     print(f'[      ] identifying connected components...', end='')
     for _vec, (x, y, z) in iterator:
-        _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
+        _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec, N=1)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
         _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
                                                                  embed=_embed).squeeze()

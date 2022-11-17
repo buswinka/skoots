@@ -149,6 +149,7 @@ class dataset(Dataset):
         self.image = [x.pin_memory() for x in self.image]
         self.masks = [x.pin_memory() for x in self.masks]
         self.skeletons = [{k: v.pin_memory() for (k, v) in x.items()} for x in self.skeletons]
+        return self
 
 
 class BackgroundDataset(Dataset):

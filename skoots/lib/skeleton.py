@@ -39,7 +39,7 @@ def average_baked_skeletons(baked_skeleton: Tensor, kernel_size: int = 3) -> Ten
     return features
 
 
-@torch.jit.script
+@torch.jit.ignore
 def bake_skeleton(masks: Tensor,
                   skeletons: Dict[int, Tensor],
                   anisotropy: List[float] = (1., 1., 1.),
@@ -91,6 +91,7 @@ def bake_skeleton(masks: Tensor,
 
         # Calculate the distance between the skeleton of object 'id'
         # and all nonzero pixels of the binary mask of instance 'id'
+        # print(skel.shape, nonzero.shape, id)
         ind: Tensor = torch.cdist(x1=skel.mul(anisotropy),
                                   x2=nonzero.mul(anisotropy)
                                   ).squeeze(0).argmin(dim=0)
@@ -98,6 +99,7 @@ def bake_skeleton(masks: Tensor,
         nonzero = nonzero.squeeze(0).long()  # Can only index with long dtype
 
         baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skel[0, ind, :].float().T
+        del ind
 
     baked = average_baked_skeletons(baked.unsqueeze(0)).squeeze(0) if average else baked
     baked[baked==0] = -100 # otherwise 0,0,0 is positive... weird...
@@ -107,7 +109,8 @@ def bake_skeleton(masks: Tensor,
 
 def skeleton_to_mask(skeletons: Dict[int, Tensor],
                      shape: Tuple[int, int, int],
-                     kernel_size: Tuple[int, int, int] = (15,15,1)) -> Tensor:
+                     kernel_size: Tuple[int, int, int] = (15,15,1),
+                     n: int = 2) -> Tensor:
     """
     Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or whatever...
 
@@ -137,7 +140,7 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor],
 
     skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
 
-    for _ in range(2):  # this might make things a bit better on the skeleton side of things...
+    for _ in range(n):  # this might make things a bit better on the skeleton side of things...
         skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0.5).float()), kernel_size, [0.8, 0.8, 0.8])
 
     return skeleton_mask.squeeze(0)
