@@ -6,7 +6,6 @@ from typing import Dict, Optional, Union, List
 import matplotlib.pyplot as plt
 from torchvision.utils import flow_to_image, draw_keypoints, make_grid
 
-
 @torch.no_grad()
 def update_bn(loader, model, device=None):
     r"""Updates BatchNorm running_mean, running_var buffers in the model.

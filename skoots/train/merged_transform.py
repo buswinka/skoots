@@ -1,120 +1,12 @@
 import torch
 from torch import Tensor
 import torchvision.transforms.functional as ttf
-from torchvision.ops import box_convert
 from typing import Dict, Tuple, Union, Sequence, List, Callable, Optional
-from skoots.lib.morphology import binary_erosion
+from skoots.lib.morphology import binary_erosion, _get_binary_kernel3d
 from skoots.lib.skeleton import bake_skeleton, skeleton_to_mask
 
 import math
-import random
-from tqdm import tqdm
-import torch.nn.functional as F
 from copy import deepcopy
-
-
-def average_baked_skeletons(input: Tensor) -> Tensor:
-    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
-    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
-    b, c, h, w, d = input.shape
-    # map the local window to single vector
-    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
-                                padding=padding, stride=1)
-    features: Tensor = features.view(b, c, -1, h, w, d)  # B, C, -1, X, Y, Z
-
-    # print(features.shape)
-
-    nonzero = features.gt(0).sum(2)  # B, C, X, Y, Z
-    nonzero[nonzero.eq(0)] = 1.
-    features = features.sum(2)  # This is the average of the kernel window... without zeros
-    features = features / nonzero
-
-    return features
-
-
-def median_filter(input: Tensor) -> Tensor:
-    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
-    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
-    b, c, h, w, d = input.shape
-    # map the local window to single vector
-    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
-                                padding=padding, stride=1)
-    return torch.median(features.view(b, c, -1, h, w, d), dim=2)[0]
-
-
-def mean_filter(input: Tensor) -> Tensor:
-    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
-    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
-    b, c, h, w, d = input.shape
-    # map the local window to single vector
-    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
-                                padding=padding, stride=1)
-    return torch.mean(features.view(b, c, -1, h, w, d), dim=2)[0]
-
-
-def dilate(input: Tensor) -> Tensor:
-    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
-    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
-    b, c, h, w, d = input.shape
-    # map the local window to single vector
-    features = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
-                        padding=padding, stride=1)
-    return torch.max(features.view(b, c, -1, h, w, d), dim=2)[0]
-
-
-def _compute_zero_padding(kernel_size: Tuple[int, int, int]) -> Tuple[int, int, int]:
-    r"""Utility function that computes zero padding tuple.
-    Adapted from Kornia
-    """
-    computed: List[int] = [(k - 1) // 2 for k in kernel_size]
-    return computed[0], computed[1], computed[2]
-
-
-def _get_binary_kernel3d(window_size: int, dtype, device: torch.device) -> torch.Tensor:
-    r"""Creates a symetric binary kernel to extract the patches. If the window size
-    is HxWxD will create a (H*W)xHxW kernel.
-
-    ADAPTED FROM KORNIA
-
-    """
-    window_range: int = int(window_size ** 3)
-    kernel: torch.Tensor = torch.zeros((window_range, window_range, window_range), device=device, dtype=dtype)
-    for i in range(window_range):
-        kernel[i, i, i] += torch.tensor(1, dtype=dtype, device=device)
-    kernel = kernel.view(-1, 1, window_size, window_size, window_size)
-
-    # get rid of all zero kernels
-    ind = torch.nonzero(kernel.view(kernel.shape[0], -1).sum(1))
-    return kernel[ind[:, 0], ...]
-
-
-@torch.jit.script
-def calc_centroid(mask: Tensor, id: int) -> Tensor:
-    temp = (mask == id).float()
-
-    lower = torch.nonzero(temp).min(0)[0]
-    upper = torch.nonzero(temp).max(0)[0]
-
-    temp = temp[
-           lower[0].item():upper[0].item(),  # x
-           lower[1].item():upper[1].item(),  # y
-           lower[2].item():upper[2].item(),  # z
-           ]
-
-    x, y, z = temp.shape
-    temp = temp.view((1, x, y, z))
-
-    nonzero = torch.nonzero(temp)
-    old_temp = temp
-    while nonzero.numel() > 0:
-        old_temp = temp
-        temp = binary_erosion(temp.unsqueeze(0))
-        nonzero = torch.nonzero(temp)
-    centroid = torch.nonzero(old_temp.view(x, y, z)).float().mean(0).add(lower)
-
-    assert mask[centroid[0], centroid[1], centroid[1]] == id
-    return centroid
-
 
 @torch.jit.script
 def _get_box(mask: Tensor, device: str, threshold: int) -> Tuple[Tensor, Tensor]:
@@ -547,26 +439,6 @@ def background_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] 
     data_dict['skele_masks'] = torch.zeros_like(image, device=DEVICE)
 
     return data_dict
-
-
-# @torch.jit.script
-def get_centroids(masks: Tensor) -> Tensor:
-    masks = masks.squeeze(0) if masks.shape[0] == 1 else masks
-    unique = torch.unique(masks)
-    unique = unique[unique != 0]
-    futures: List[torch.jit.Future[torch.Tensor]] = []
-
-    # gen = enumerate(unique) if torch.jit.is_scripting() else tqdm(enumerate(unique), desc='\t')
-
-    for i, id in enumerate(unique):
-        futures.append(torch.jit.fork(calc_centroid, masks, id))
-
-    centroids = []
-    for future in futures:
-        centroids.append(torch.jit.wait(future))
-    centroids = torch.stack(centroids, 0)
-
-    return centroids
 
 
 if __name__ == '__main__':

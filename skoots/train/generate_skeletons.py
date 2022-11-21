@@ -23,7 +23,6 @@ def save_train_test_split(mask: Tensor, skeleton: Dict[int, Tensor], z_split: in
     :return: None
     """
 
-
     # train
     _mask = mask[..., 0:z_split+1:]
 

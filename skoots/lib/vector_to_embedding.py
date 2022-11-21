@@ -81,10 +81,10 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
         for i, k in enumerate([x, y, z]):
             index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
 
+        # 3d index to raveled
         index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
-
         index = index.clamp(0, x * y * z - 1).long()
-        # mesh = mesh + vector.flatten(start_dim=2)[]
+
         for i in range(c):
             mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
 
@@ -155,3 +155,15 @@ def vec2embedND(scale, vector):
     vector = vector.mul(num.view(newshape))
 
     return mesh + vector
+
+
+if __name__ == '__main__':
+    vector = torch.ones((1,3,10,10,10))
+    vector[:, 0, ...] = -1
+    vector[:, 1, ...] = -1
+    vector[:, 2, ...] = -1
+
+    out = vector_to_embedding(torch.tensor((1, 1, 1)), vector, N=4)
+
+    print(f'{out[0, :, 3, 3, 3]=}')
+

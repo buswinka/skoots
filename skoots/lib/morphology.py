@@ -31,7 +31,7 @@ def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
     return kernel[ind[:, 0], ...]
 
 
-# FROM TORCHVISIN FUNCTIONAL
+# re-implemented from torchvision.tensor.functional
 def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
     ksize_half = (kernel_size - 1) * 0.5
 
@@ -41,7 +41,7 @@ def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
 
     return kernel1d
 
-# FROM TORCHVISIN FUNCTIONAL
+# re-implemented from torchvision.tensor.functional
 def _get_gaussian_kernel2d(
     kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
 ) -> Tensor:
@@ -50,6 +50,7 @@ def _get_gaussian_kernel2d(
     kernel2d = torch.mm(kernel1d_y[:, None], kernel1d_x[None, :])
     return kernel2d
 
+# expanded to 3D
 def _get_gaussian_kernel3d(
         kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
 ) -> Tensor:
@@ -70,6 +71,7 @@ def gauss_filter(input: Tensor, kernel: List[int], sigma: List[float]) -> Tensor
     features: Tensor = F.conv3d(input, kernel, padding=padding, stride=(1, 1, 1), groups=input.shape[1])
 
     return features
+
 
 @torch.jit.script
 def binary_erosion(image: Tensor) -> Tensor:
@@ -112,5 +114,34 @@ def binary_dilation(image: Tensor) -> Tensor:
     b, c, h, w, d = image.shape
     # map the local window to single vector
     features = F.conv3d(image.reshape(b * c, 1, h, w, d), kernel,
+                        padding=padding, stride=1)
+    return torch.max(features.view(b, c, -1, h, w, d), dim=2)[0]
+
+def median_filter(input: Tensor) -> Tensor:
+    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
+    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
+    b, c, h, w, d = input.shape
+    # map the local window to single vector
+    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
+                                padding=padding, stride=1)
+    return torch.median(features.view(b, c, -1, h, w, d), dim=2)[0]
+
+
+def mean_filter(input: Tensor) -> Tensor:
+    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
+    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
+    b, c, h, w, d = input.shape
+    # map the local window to single vector
+    features: Tensor = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
+                                padding=padding, stride=1)
+    return torch.mean(features.view(b, c, -1, h, w, d), dim=2)[0]
+
+
+def dilate(input: Tensor) -> Tensor:
+    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 3))
+    kernel: Tensor = _get_binary_kernel3d(3, input.dtype, input.device)
+    b, c, h, w, d = input.shape
+    # map the local window to single vector
+    features = F.conv3d(input.reshape(b * c, 1, h, w, d), kernel,
                         padding=padding, stride=1)
     return torch.max(features.view(b, c, -1, h, w, d), dim=2)[0]
