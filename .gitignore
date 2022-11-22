@@ -9,6 +9,8 @@ __pycache__/
 *.png
 *.tif
 
+build/
+
 tests/
 
 # C extensions

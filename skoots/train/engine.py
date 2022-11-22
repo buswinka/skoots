@@ -25,8 +25,7 @@ import matplotlib.pyplot as plt
 
 Dataset = Union[Dataset, DataLoader]
 
-
-# SKELETON ENGINE
+# SKELETON TRAINING ENGINE
 def engine(
         model: FasterRCNN,
         lr: float,
@@ -51,8 +50,11 @@ def engine(
         distributed=True,
         mixed_precision=False,
         n_warmup: int = 100,
-        force=False) -> Tuple[OrderedDict, OrderedDict, List[float]]:
+        force=False,
+        **kwargs,
+) -> Tuple[OrderedDict, OrderedDict, List[float]]:
 
+    # Print out each kwarg to std out
     if verbose and rank == 0:
         print('Initiating Training Run', flush=False)
         vars = locals()
@@ -67,6 +69,7 @@ def engine(
     scheduler = scheduler(optimizer)
     scaler = GradScaler(enabled=mixed_precision)
 
+    # Save each loss value in a list...
     avg_epoch_loss = []
     avg_epoch_embed_loss = []
     avg_epoch_prob_loss = []
@@ -79,12 +82,11 @@ def engine(
 
     # skel_crossover_loss = skoots.train.loss.split(n_iter=3, alpha=2)
 
-
-    # Warmup...
+    # Warmup... Get the first from train_data
     for images, masks, skeleton, skele_masks, baked in train_data:
         pass
 
-    warmup_range = trange(n_warmup, desc = 'Warmup: {}')
+    warmup_range = trange(n_warmup, desc='Warmup: {}')
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
 
@@ -100,7 +102,8 @@ def engine(
 
             _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
             _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) #+ skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+            _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(
+                0).float())  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
             loss = _loss_embed + (1 * _loss_prob) + (1 * _loss_skeleton)
 
             # print('All Skeleton Loss: ', _loss_skeleton.item())
@@ -143,7 +146,8 @@ def engine(
                 _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, :w
                 # Z?]
                 _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(0).float()) #+ skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+                _loss_skeleton = loss_skele(predicted_skeleton, skele_masks.gt(
+                    0).float())  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
                 loss = _loss_embed + (1 * _loss_prob) + ((1 if e > 10 else 0) * _loss_skeleton)
 

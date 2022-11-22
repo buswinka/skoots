@@ -6,6 +6,9 @@ from skimage.morphology import skeletonize, binary_erosion
 
 from tqdm import tqdm, trange
 from typing import Optional, Tuple, Dict
+import os.path
+import skimage.io as io
+import numpy as np
 
 
 def save_train_test_split(mask: Tensor, skeleton: Dict[int, Tensor], z_split: int, base: str):
@@ -134,6 +137,27 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
 
     return output
 
+
+def create_gt_skeletons(base_dir, mask_filter, scale: Tuple[float, float, float]):
+    files = glob.glob(os.path.join(base_dir, f'*{mask_filter}.tif'))
+    files = [b[:-11:] for b in files]
+
+    for f in files:
+        mask = io.imread(f)
+        mask = torch.from_numpy(mask.astype(np.int32))
+        mask = mask.permute((1, 2, 0))
+
+        try:
+            output = calculate_skeletons(mask, scale)
+        except:
+            raise ValueError(f'ERROR: {f}')
+
+        for u in mask.unique():
+            if u == 0: continue
+            assert int(u) in output, f'{f}, {u}, {output.keys()=}'
+
+        torch.save(output, f[:-(len(mask_filter)+4)] + '.skeletons.trch')
+        print('SAVED', f[:-(len(mask_filter)+4)]+ '.skeletons.trch')
 
 if __name__ == '__main__':
     import skimage.io as io

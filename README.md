@@ -12,11 +12,10 @@ Makes use of BISM (Biomedical Image Segmentation Models) and a lot of pyTorch
 
 ## <img src="resources/installation.png" align="center" width="150px"/> 
 <!-- start installation -->
-To install, make sure pyTorch is installed with CUDA support.
+To install, make sure pyTorch is installed with CUDA support. 
 ```bash
 pip install skoots
 ```
-
 <!-- end installation -->
 
 ## Usage

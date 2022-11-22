@@ -19,28 +19,29 @@ from bism.models.spatial_embedding import SpatialEmbedding
 from torch.cuda.amp import GradScaler, autocast
 
 import warnings
+import os.path
 
 warnings.filterwarnings("ignore")
 
 import matplotlib.pyplot as plt
-
 from skimage.morphology import skeletonize
-
-"""
-Instance Segmentation more or less...
----------------------
-    vectors, skeletons, semantic_masks = model(image)
-    embedding_x, embedding_y, embedding_z = vectors_to_embedding(vectors * semantic_masks)
-    instance_skeletons = efficient_flood_fill(skeletons)
-    instance_mask = instance_skeleton[embedding_x, embedding_y, embedding_z]
-
-"""
 
 
 @torch.inference_mode()  # disables autograd and reference counting for SPEED
 def eval(image_path: str,
          checkpoint_path: str = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_17-15-08_CHRISUBUNTU.trch') -> None:
-    scale = -99999
+
+    """
+    Evaluates SKOOTS on an arbitrary image.
+
+    :param image_path:
+    :param checkpoint_path:
+    :return:
+    """
+
+    checkpoint = torch.load(checkpoint_path)
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    filename_without_extensions = os.path.splitext(image_path)[0]
 
     image: np.array = io.imread(image_path)  # [Z, X, Y, C]
     image: np.array = image[..., np.newaxis] if image.ndim == 3 else image
@@ -50,7 +51,7 @@ def eval(image_path: str,
     scale: int = 2 ** 16 if image.dtype == np.uint16 else 2 ** 8
 
     image: Tensor = torch.from_numpy(image).pin_memory()
-    print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
+    # print(f'Image Shape: {image.shape}, Dtype: {image.dtype}, Scale Factor: {scale}')
 
     # Allocate a bunch or things...
     if image.dtype == torch.float:
@@ -59,27 +60,19 @@ def eval(image_path: str,
     else:
         pad3d = False
 
-    num_tuple = (60, 60, 60 // 5),
-    num = torch.tensor(num_tuple)
+    vector_scale = torch.tensor(checkpoint['vector_scale']),
 
     c, x, y, z = image.shape
 
     skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.int16)
-    # semantic = torch.zeros(size=(1, x, y, z), dtype=torch.int16)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
-
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-
-    checkpoint = torch.load(checkpoint_path)
-
-    state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
 
     model_constructor = get_constructor('unext', spatial_dim=3)  # gets the model from a name...
     backbone = model_constructor(in_channels=1, out_channels=32, dims=[32, 64, 128, 64, 32])
     model = SpatialEmbedding(
         backbone=backbone
     )
-    model.load_state_dict(state_dict=state_dict)
+    model.load_state_dict(state_dict=checkpoint['model_state_dict'])
     model = model.to(device).train()
     model = torch.jit.optimize_for_inference(torch.jit.script(model))
 
@@ -103,7 +96,7 @@ def eval(image_path: str,
         vec = vec * probability_map.gt(0.5)
         skeleton_map = skeleton_map * probability_map.gt(0.5)
 
-
+        # put the predictions into the preallocated tensors...
         skeleton[:,
         x + overlap[0]: x + cropsize[0] - overlap[0],
         y + overlap[1]: y + cropsize[1] - overlap[1],
@@ -112,14 +105,6 @@ def eval(image_path: str,
                                                         overlap[1]: -overlap[1],
                                                         overlap[2]: -overlap[2]
                                                         :].gt(0.8)
-        # semantic[:,
-        # x + overlap[0]: x + cropsize[0] - overlap[0],
-        # y + overlap[1]: y + cropsize[1] - overlap[1],
-        # z + overlap[2]: z + cropsize[2] - overlap[2]] = probability_map[0, :,
-        #                                                 overlap[0]: -overlap[0],
-        #                                                 overlap[1]: -overlap[1],
-        #                                                 overlap[2]: -overlap[2]
-        #                                                 :].gt(0.5)
 
         vectors[:,
         x + overlap[0]: x + cropsize[0] - overlap[0],
@@ -135,33 +120,20 @@ def eval(image_path: str,
     # _x, _y, _z
     if pad3d:
         skeleton = skeleton[0, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
-        # semantic = semantic[0, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
         vectors = vectors[:, pad3d[2]:-pad3d[3], pad3d[4]:-pad3d[5], pad3d[0]:-pad3d[1]]
 
     else:
         skeleton = skeleton[0, ...]
         vectors = vectors[:, ...]
 
-    del image
+    del image  # we don't need the image anymore
 
-    # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/semantic.tif',
-    #           semantic.squeeze().mul(255).int().cpu().numpy().astype(np.uint8).transpose(2, 0, 1))
+    torch.save(vectors, filename_without_extensions + '_vectors.trch')
+    torch.save(skeleton, filename_without_extensions + '_unlabeled_skeletons.trch')
 
+    skeleton: Tensor = efficient_flood_fill(skeleton)
 
-    # io.imsave is memory costly when saving large tensors... :(
-    torch.save(vectors, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/vectors.trch')
-    torch.save(skeleton, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.trch')
-
-    # io.imsave(
-    #     '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton_unlabeled.tif',
-    #     skeleton.squeeze().cpu().numpy().transpose(2, 0, 1))
-
-    skeleton = efficient_flood_fill(skeleton)
-
-    # io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.tif',
-    #           skeleton.cpu().numpy().transpose(2, 0, 1))
-
-    torch.save(skeleton, '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/skeleton.trch')
+    torch.save(skeleton, filename_without_extensions + '_skeletons.trch')
 
     instance_mask = torch.zeros_like(skeleton, dtype=torch.int16)
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
@@ -170,7 +142,7 @@ def eval(image_path: str,
 
     print(f'[      ] identifying connected components...', end='')
     for _vec, (x, y, z) in iterator:
-        _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=num, vector=_vec)
+        _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=vector_scale, vector=_vec)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
         _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
                                                                  embed=_embed).squeeze()
@@ -182,7 +154,7 @@ def eval(image_path: str,
 
     del skeleton, vectors  # explicitly delete unnecessary tensors for memory
 
-    io.imsave('/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/instance_mask.tif',
+    io.imsave(filename_without_extensions + '_instance_mask.tif',
               instance_mask.cpu().numpy().transpose(2, 0, 1))
 
 

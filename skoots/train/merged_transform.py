@@ -8,6 +8,7 @@ from skoots.lib.skeleton import bake_skeleton, skeleton_to_mask
 import math
 from copy import deepcopy
 
+
 @torch.jit.script
 def _get_box(mask: Tensor, device: str, threshold: int) -> Tuple[Tensor, Tensor]:
     # mask in shape of 300, 400, 1 [H, W, z=1]
@@ -116,7 +117,10 @@ def calc_centroid(mask: torch.Tensor, id: int) -> torch.Tensor:
 
 @torch.no_grad()
 def merged_transform_3D(data_dict: Dict[str, Tensor],
-                        device: Optional[str] = None) -> Dict[str, Tensor]:
+                        device: Optional[str] = None,
+                        bake_skeleton_anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
+                        smooth_skeleton_kernel_size: Tuple[int, int, int] = (3, 3, 1)
+                        ) -> Dict[str, Tensor]:
     DEVICE: str = str(data_dict['image'].device) if device is None else device
 
     # Image should be in shape of [C, H, W, D]
@@ -180,7 +184,6 @@ def merged_transform_3D(data_dict: Dict[str, Tensor],
                 skeletons.pop(k)
             else:
                 skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
-
 
     # -------------------affine (Cant use baked skeletons)
     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
@@ -306,11 +309,11 @@ def merged_transform_3D(data_dict: Dict[str, Tensor],
     data_dict['masks'] = masks
     data_dict['skeletons'] = skeletons
 
-    baked: Tensor = bake_skeleton(masks, skeletons, anisotropy=[1.0, 1.0, 3.0], average=True, device=DEVICE)
+    baked: Tensor = bake_skeleton(masks, skeletons, anisotropy=bake_skeleton_anisotropy, average=True, device=DEVICE)
     data_dict['baked-skeleton']: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
-    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z), kernel_size=(3, 3, 1), n=1)
+    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z), kernel_size=smooth_skeleton_kernel_size, n=1)
 
     return data_dict
 
@@ -344,7 +347,6 @@ def background_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] 
 
     image = torch.clone(data_dict['image'])  #
 
-
     # ------------ Random Crop 1
     extra = 300
     w = CROP_WIDTH + extra if CROP_WIDTH + extra <= image.shape[1] else torch.tensor(image.shape[1])
@@ -376,7 +378,6 @@ def background_transform_3D(data_dict: Dict[str, Tensor], device: Optional[str] 
                            shear=[float(shear.item())],
                            scale=scale.item(),
                            translate=[0, 0]).permute(0, 2, 3, 1)
-
 
     # ------------ Center Crop 2
     w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])

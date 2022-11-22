@@ -2,10 +2,16 @@ import torch
 from torch import Tensor
 import torch.nn.functional as F
 from torchvision.transforms.functional import gaussian_blur
+import skimage.io as io
 
 from typing import List, Tuple, Dict, Optional
+import glob
 
 from skoots.lib.morphology import gauss_filter, binary_dilation, _compute_zero_padding, _get_binary_kernel3d
+from skoots.train.generate_skeletons import calculate_skeletons, save_train_test_split
+import numpy as np
+
+import os.path
 
 
 @torch.jit.script
@@ -180,6 +186,7 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     out[ind] = skeleton[:, :, x_ind, y_ind, z_ind].int()  # assign the skeleton ind to the out tensor
 
     return out.view(1, 1, x, y, z)                  # return the re-shaped out tensor
+
 
 
 if __name__ == '__main__':

@@ -49,30 +49,30 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     # We now check each crop seam for double labeled instances. Here, a collision is the same object having label (x)
     # in one crop, then label (y) in another.  We must check in all dims, x, y, and z.
 
-    print(f'[      ] Detecting collisions...', end='')
+    # print(f'[      ] Detecting collisions...', end='')
     # X
     collisions: List[Tuple[int, int]] = []
-    for x in seams_x:
+    for x in tqdm(seams_x, desc='Checking for duplicate IDs in X', total=len(seams_x)):
         if x > 0:
             slice_0 = skeleton[0, x, :, :]
             slice_1 = skeleton[0, x - 1, :, :]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
     # Y
-    for y in seams_y:
+    for y in tqdm(seams_y, desc='Checking for duplicate IDs in Y', total=len(seams_y)):
         if y > 0:
             slice_0 = skeleton[0, :, y, :]
             slice_1 = skeleton[0, :, y-1, :]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
     # Z
-    for z in seams_z:
+    for z in tqdm(seams_z, desc='Checking for duplicate IDs in Y', total=len(seams_z)):
         if z > 0:
             slice_0 = skeleton[0, :, :, z]
             slice_1 = skeleton[0, :, :, z - 1]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
-    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+    # print("\r[\x1b[1;32;40m DONE \x1b[0m] Detecting collisions...")
 
     # Multiple collisions for each id value may exist, so we construct a graph of id values
     print(f'[      ] Constructing collision graph...', end='')
@@ -86,12 +86,12 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
             graph[b] = [a]
         else:
             graph[b].append(a)
-    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+    print("\r[\x1b[1;32;40m DONE \x1b[0m] Constructing collision graph...")
 
     # Each skeleton, of multiple potential id values, forms a connected component in the graph
-    print(f'[      ] identifying connected components...', end='')
+    print(f'[      ] Identifying connected components...', end='')
     cc: List[List[int]] = connected_components(graph)
-    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+    print("\r[\x1b[1;32;40m DONE \x1b[0m] Identifying connected components...")
 
     # We need to decide which node of the graph, (id value of a skeleton) will represent the rest of the skeleton
     # For simplicity we just choose the last value.
@@ -110,7 +110,7 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
 
     print(f'[      ] Performing in place replacement of collisions...', end='')
     skeleton = replace(skeleton, collisions)  # in place replace
-    print("\r[\x1b[1;32;40m DONE \x1b[0m]")
+    print("\r[\x1b[1;32;40m DONE \x1b[0m] Performing in place replacement of collisions...")
 
     return skeleton.squeeze(0)
 

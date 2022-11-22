@@ -15,6 +15,8 @@ from torch.utils.tensorboard import SummaryWriter
 from skoots.train.setup import setup_process, cleanup, find_free_port
 import torch.multiprocessing as mp
 import torch.nn as nn
+from torch import Tensor
+from typing import Tuple, Callable, Dict
 
 """
 ASSUMPTIONS: 
@@ -43,15 +45,20 @@ NEW STRATEGY (Oct 21):
     - EVAL anisotropy param for bake skeletons should also probably be huge (1. 1. 15)
 """
 
-
-
-torch.manual_seed(0)
+torch.manual_seed(101196)
 
 
 def train(rank: str,
           port: str,
           world_size: int,
-          model: nn.Module, hyperparams):
+          model: nn.Module,
+          hyperparams,
+          train_dir: str = 'data/unscaled/train',
+          validation_dir: str = 'data/unscaled/validate',
+          bacground_dir: str = 'data/background',
+          vector_scale: Tuple[float, float, float] = (60, 60, 60 // 5),
+          anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
+          ):
     setup_process(rank, world_size, port, backend='nccl')
 
     device = f'cuda:{rank}'
@@ -61,9 +68,15 @@ def train(rank: str,
 
     _ = model(torch.rand((1, 1, 300, 300, 20), device=device))
 
+    augmentations: Callable[[Dict[str, Tensor]], Dict[str, Tensor]] = partial(merged_transform_3D,
+                                                                              bake_skeleton_anisotropy=anisotropy,
+                                                                              device=device)
+
     # Training Dataset - MultiDataset[Mitochondria, Background]
-    data = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/train',
-                   transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
+    data = dataset(path=train_dir,
+                   transforms=augmentations,
+                   sample_per_image=32,
+                   device=device,
                    pad_size=100).to(device)
 
     # # data1 = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/rutherford',
@@ -74,7 +87,7 @@ def train(rank: str,
     #                 transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
     #                 pad_size=100).to('cpu')
 
-    background = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/background',
+    background = dataset(path=bacground_dir,
                          transforms=partial(background_transform_3D, device=device), sample_per_image=6, device=device,
                          pad_size=100).to(device)
     merged = MultiDataset(data, background)
@@ -83,8 +96,8 @@ def train(rank: str,
     dataloader = DataLoader(merged, num_workers=0, batch_size=2, sampler=train_sampler, collate_fn=skeleton_colate)
 
     # Validation Dataset
-    vl = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate',
-                 transforms=partial(merged_transform_3D, device=device), device=device, sample_per_image=8,
+    vl = dataset(path=validation_dir,
+                 transforms=augmentations, device=device, sample_per_image=8,
                  pad_size=100).to(device)
     test_sampler = torch.utils.data.distributed.DistributedSampler(vl)
     valdiation_dataloader = DataLoader(vl, num_workers=0, batch_size=2, sampler=test_sampler,
@@ -105,18 +118,22 @@ def train(rank: str,
     f = {'multiplier': 0.5, 'epoch': 20000}
     sigma = Sigma([a, b, c, d, f], initial_sigma, device)
 
+    # The constants dict contains everything needed to replicate a training run.
+    # will get serialized and saved.
+    epochs = 10000
     constants = {
         'model': model,
-        'vector_scale': (60, 60, 60 // 5),
+        'vector_scale': vector_scale,
+        'anisotropy': anisotropy,
         'lr': 5e-4,
         'wd': 1e-6,
         'optimizer': partial(torch.optim.AdamW, eps=1e-16),
-        'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=10000 + 1),
+        'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=epochs+ 1),
         'sigma': sigma,
         'loss_embed': tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
         'loss_prob': tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
         'loss_skele': tversky(alpha=0.5, beta=1.5, eps=1e-8, device=device),
-        'epochs': 10000,
+        'epochs': epochs,
         'device': device,
         'train_data': dataloader,
         'val_data': valdiation_dataloader,
@@ -125,7 +142,7 @@ def train(rank: str,
         'distributed': True,
         'mixed_precision': True,
         'rank': rank,
-        'savepath': '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models'
+        'savepath': '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models',
     }
 
     writer = SummaryWriter() if rank == 0 else None
