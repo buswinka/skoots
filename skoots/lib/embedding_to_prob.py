@@ -32,7 +32,7 @@ def baked_embed_to_prob(embedding: Tensor, baked_skeletons: Tensor, sigma: Tenso
     :return: Probability matrix
     """
 
-    sigma = sigma + torch.tensor(eps, device=embedding.device)  # when sigma goes to zero, things tend to break
+    sigma = sigma + eps  # when sigma goes to zero, things tend to break
     sigma = sigma.pow(2).mul(2).mul(-1)
 
     out = torch.exp((embedding - baked_skeletons)
