@@ -7,6 +7,16 @@ from skoots.lib.utils import crop_to_identical_size
 from skoots.lib.morphology import binary_erosion
 
 
+def tversky_graphable(pred, gt, alpha, beta):
+
+    true_positive: Tensor = pred.mul(gt).sum()
+    false_positive: Tensor = torch.logical_not(gt).mul(pred).sum().add(1e-10).mul(alpha)
+    false_negative: Tensor = ((1 - pred) * gt).sum() * beta
+
+    tversky = (true_positive + 1e-10) / (true_positive + false_positive + false_negative + 1e-10)
+
+    return 1 - tversky
+
 class jaccard(nn.Module):
     def __init__(self):
         super(jaccard, self).__init__()

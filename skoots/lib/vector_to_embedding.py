@@ -15,6 +15,37 @@ object locations.
 
 """
 
+@torch.jit.script
+def get_vector_mesh(shape: Tuple[int, int, int, int, int], device: str) -> Tensor:
+    """ generates a 3d mesh from a vector """
+    axis_ind: List[Tensor] = [
+        torch.linspace(0, shape[2] - 1, shape[2], device=device),
+        torch.linspace(0, shape[3] - 1, shape[3], device=device),
+        torch.linspace(0, shape[4] - 1, shape[4], device=device)
+    ]
+
+    mesh: List[Tensor] = torch.meshgrid(axis_ind, indexing='ij')
+    mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
+    mesh: Tensor = torch.cat(mesh, dim=1)
+
+    return mesh
+
+
+
+@torch.jit.script
+def _vec2embed3D_graphable(static_scale: Tensor, vector: Tensor, static_mesh) -> Tensor:
+    """
+    3D vector to embedding which uses static inputs for cuda graphs
+
+    Could be a faster way to do this with strides but idk...
+
+    :param scale: Tensor with shape (3)
+    :param vector: [B, C, X, Y, Z]
+    :return: embedding vector
+    """
+
+    return static_mesh + vector.mul(static_scale.view((1, 3, 1, 1, 1)))
+
 
 @torch.jit.script
 def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
@@ -49,9 +80,7 @@ def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
 def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     """
     2D or 3D vector to embedding
-
     Could be a faster way to do this with strides but idk...
-
     :param scale: [N=2/3]
     :param vector: [B, C, X, Y, Z?]
     :param n: number of times to apply vectors

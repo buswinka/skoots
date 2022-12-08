@@ -60,7 +60,7 @@ def eval(image_path: str,
     else:
         pad3d = False
 
-    vector_scale = torch.tensor(checkpoint['vector_scale']),
+    vector_scale = torch.tensor(checkpoint['vector_scale'])
 
     c, x, y, z = image.shape
 
@@ -74,7 +74,9 @@ def eval(image_path: str,
     )
     model.load_state_dict(state_dict=checkpoint['model_state_dict'])
     model = model.to(device).train()
-    model = torch.jit.optimize_for_inference(torch.jit.script(model))
+    # model = torch.jit.optimize_for_inference(torch.jit.script(model))
+
+    model = torch.jit.script(model)
 
     cropsize = [300, 300, 20]
     overlap = [30, 30, 2]
@@ -142,6 +144,7 @@ def eval(image_path: str,
 
     print(f'[      ] identifying connected components...', end='')
     for _vec, (x, y, z) in iterator:
+
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(scale=vector_scale, vector=_vec)
         _embed += torch.tensor((x, y, z)).view(1, 3, 1, 1, 1)  # We adjust embedding to region of the crop
         _inst_maks = skoots.lib.skeleton.index_skeleton_by_embed(skeleton=skeleton,
@@ -161,7 +164,7 @@ def eval(image_path: str,
 if __name__ == '__main__':
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
     # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate/hide_validate.tif'
+    image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Fig X - compare to affinity/data/hide_validate.tif'
     # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/cell_apex-1.tif'
