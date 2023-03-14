@@ -66,7 +66,7 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
     # Z
-    for z in tqdm(seams_z, desc='Checking for duplicate IDs in Y', total=len(seams_z)):
+    for z in tqdm(seams_z, desc='Checking for duplicate IDs in Z', total=len(seams_z)):
         if z > 0:
             slice_0 = skeleton[0, :, :, z]
             slice_1 = skeleton[0, :, :, z - 1]

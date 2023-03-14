@@ -1,22 +1,23 @@
 import warnings
 from functools import partial
+from typing import Tuple, Callable, Dict
 import os.path
 
-import torch.optim.lr_scheduler
 from skoots.train.dataloader import dataset, MultiDataset, skeleton_colate
 from skoots.train.sigma import Sigma
-from skoots.train.loss import tversky
+from skoots.train.loss import tversky, soft_dice_cldice
 from skoots.train.merged_transform import merged_transform_3D, background_transform_3D
 from skoots.train.engine import engine
+from skoots.train.setup import setup_process, cleanup, find_free_port
 
+from torch import Tensor
+import torch.nn as nn
+import torch.optim.lr_scheduler
+import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from skoots.train.setup import setup_process, cleanup, find_free_port
-import torch.multiprocessing as mp
-import torch.nn as nn
-from torch import Tensor
-from typing import Tuple, Callable, Dict
+from lion_pytorch import Lion
 
 """
 ASSUMPTIONS: 
@@ -53,9 +54,9 @@ def train(rank: str,
           world_size: int,
           model: nn.Module,
           hyperparams,
-          train_dir: str = 'data/unscaled/train',
-          validation_dir: str = 'data/unscaled/validate',
-          bacground_dir: str = 'data/background',
+          train_dir: str = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/train',
+          validation_dir: str = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate',
+          bacground_dir: str = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/background',
           vector_scale: Tuple[float, float, float] = (60, 60, 60 // 5),
           anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
           ):
@@ -65,6 +66,7 @@ def train(rank: str,
 
     model = model.to(device)
     model = torch.nn.parallel.DistributedDataParallel(model)
+    # model = torch.compile(model)
 
     _ = model(torch.rand((1, 1, 300, 300, 20), device=device))
 
@@ -77,7 +79,9 @@ def train(rank: str,
                    transforms=augmentations,
                    sample_per_image=32,
                    device=device,
-                   pad_size=100).to(device)
+                   pad_size=10).to('cpu')
+
+    print('data yes')
 
     # # data1 = dataset(path='/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/rutherford',
     # #                transforms=partial(merged_transform_3D, device=device), sample_per_image=32, device=device,
@@ -89,7 +93,8 @@ def train(rank: str,
 
     background = dataset(path=bacground_dir,
                          transforms=partial(background_transform_3D, device=device), sample_per_image=6, device=device,
-                         pad_size=100).to(device)
+                         pad_size=100).to('cpu')
+
     merged = MultiDataset(data, background)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(merged)
@@ -120,18 +125,18 @@ def train(rank: str,
 
     # The constants dict contains everything needed to replicate a training run.
     # will get serialized and saved.
-    epochs = 10000
+    epochs = 100
     constants = {
         'model': model,
         'vector_scale': vector_scale,
         'anisotropy': anisotropy,
-        'lr': 5e-4,
-        'wd': 1e-6,
-        'optimizer': partial(torch.optim.AdamW, eps=1e-16),
+        'lr': 5e-4 / 5, #5e-4,
+        'wd': 1e-6 / 0.33, #1e-6,
+        'optimizer': partial(Lion, use_triton=False), #partial(torch.optim.AdamW, eps=1e-16),
         'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=epochs+ 1),
         'sigma': sigma,
-        'loss_embed': tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
-        'loss_prob': tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
+        'loss_embed': soft_dice_cldice(), #tversky(alpha=0.25, beta=0.75, eps=1e-8, device=device),
+        'loss_prob': soft_dice_cldice(), #tversky(alpha=0.5, beta=0.5, eps=1e-8, device=device),
         'loss_skele': tversky(alpha=0.5, beta=1.5, eps=1e-8, device=device),
         'epochs': epochs,
         'device': device,
@@ -146,6 +151,8 @@ def train(rank: str,
     }
 
     writer = SummaryWriter() if rank == 0 else None
+    if writer:
+        print('SUMMARY WRITER LOG DIR: ', writer.get_logdir())
     model_state_dict, optimizer_state_dict, avg_loss = engine(writer=writer, verbose=True, force=True, **constants)
     avg_loss = torch.tensor(avg_loss)
     if writer:

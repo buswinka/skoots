@@ -130,12 +130,12 @@ def eval(image_path: str,
 
     del image  # we don't need the image anymore
 
-    torch.save(vectors, filename_without_extensions + '_vectors.trch')
-    torch.save(skeleton, filename_without_extensions + '_unlabeled_skeletons.trch')
+    # torch.save(vectors, filename_without_extensions + '_vectors.trch')
+    # torch.save(skeleton, filename_without_extensions + '_unlabeled_skeletons.trch')
 
     skeleton: Tensor = efficient_flood_fill(skeleton)
 
-    torch.save(skeleton, filename_without_extensions + '_skeletons.trch')
+    # torch.save(skeleton, filename_without_extensions + '_skeletons.trch')
 
     instance_mask = torch.zeros_like(skeleton, dtype=torch.int16)
     skeleton = skeleton.unsqueeze(0).unsqueeze(0)
@@ -157,16 +157,21 @@ def eval(image_path: str,
 
     del skeleton, vectors  # explicitly delete unnecessary tensors for memory
 
-    io.imsave(filename_without_extensions + '_instance_mask.tif',
-              instance_mask.cpu().numpy().transpose(2, 0, 1))
+    # # io.imsave(filename_without_extensions + '_instance_mask.tif',
+    #           instance_mask.cpu().numpy().transpose(2, 0, 1))
 
 
 if __name__ == '__main__':
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    # image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
-    image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Fig X - compare to affinity/data/hide_validate.tif'
+    image_path = '/home/chris/Documents/threeOHC_registered_8bit_cell2.tif'
+    # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Fig X - compare to affinity/data/hide_validate.tif'
     # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/cell_apex-1.tif'
     # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure X6X  - Whole image analysis/crop.tif'
+    import time
+    t1 = time.time()
     eval(image_path)
+    t2 = time.time()
+
+    print(f"TOOK {t1-t2} seconds")
