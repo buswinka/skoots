@@ -64,6 +64,14 @@ def _get_gaussian_kernel3d(
 
 @torch.jit.script
 def gauss_filter(input: Tensor, kernel: List[int], sigma: List[float]) -> Tensor:
+    """
+    gaussian filter of a 3D tensor
+
+    :param input: (B, C, X, Y, Z)
+    :param kernel: [int, int, int]
+    :param sigma: [float, float, float]
+    :return: blured image
+    """
     padding: Tuple[int, int, int] = _compute_zero_padding(kernel)
     kernel: Tensor = _get_gaussian_kernel3d(kernel, sigma, input.dtype, input.device)
     kernel = kernel.expand(input.shape[1], 1, kernel.shape[0], kernel.shape[1], kernel.shape[2])

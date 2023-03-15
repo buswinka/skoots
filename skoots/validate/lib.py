@@ -251,19 +251,19 @@ def _iou_instance_dict(a: Tensor, b: Tensor) -> Dict[int, Tensor]:
     b_unique = b.unique()
     b_unique = b_unique[b_unique > 0]
 
-    # iou = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+
     iou = {}
 
     for i, au in tqdm(enumerate(a_unique), total=len(a_unique)):
-        _a = gt == au
-        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
-        touching = touching[touching != 0]
+        _a = a == au
 
+        touching = b[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = touching[touching != 0]
         iou[au] = []
 
         for j, bu in enumerate(b_unique):
             if torch.any(touching == bu):
-                _b = pred == bu
+                _b = b == bu
 
                 intersection = torch.logical_and(_a, _b).sum()
                 union = torch.logical_or(_a, _b).sum()
@@ -272,16 +272,16 @@ def _iou_instance_dict(a: Tensor, b: Tensor) -> Dict[int, Tensor]:
     return iou
 
 
-def get_segmentation_errors(gt: Tensor, pred: Tensor) -> float:
+def get_segmentation_errors(ground_truth: Tensor, predicted: Tensor) -> float:
     """
     Calculates the IoU of each object on a per-mask-basis.
 
-    :param gt: mask 1 with N instances
-    :param pred: mask 2 with M instances
+    :param ground_truth: mask 1 with N instances
+    :param predicted: mask 2 with M instances
     :return: NxM matrix of IoU's
     """
 
-    iou = _iou_instance_dict(gt, pred)
+    iou = _iou_instance_dict(ground_truth, predicted)
     for k, v in iou.items():
         iou[k] = torch.tensor(v)
 
@@ -291,8 +291,9 @@ def get_segmentation_errors(gt: Tensor, pred: Tensor) -> float:
             num_split += 1
 
     over_segmentation_rate = num_split / len(iou)
+    print(num_split, len(iou), over_segmentation_rate)
 
-    iou = _iou_instance_dict(pred, gt)
+    iou = _iou_instance_dict(predicted, ground_truth)
     for k, v in iou.items():
         iou[k] = torch.tensor(v)
 
@@ -306,113 +307,73 @@ def get_segmentation_errors(gt: Tensor, pred: Tensor) -> float:
     return over_segmentation_rate, under_segmentation_rate
 
 
-
-
-
-
 if __name__ == "__main__":
     gt = imread('../../tests/test_data/hide_validate.labels.tif')[..., 2:-2]
     pred = imread('../../tests/test_data/hide_validate_skeleton_instance_mask.tif')[..., 2:-2]
     aff_pred = imread('../../tests/test_data/hide_validation_affinity_instance_segmentaiton.tif')[..., 2:-2]
 
+    device = 'cuda' if torch.cuda.is_available() else "cpu"
+    gt = gt.to(device)
+    pred = pred.to(device)
+    aff_pred = aff_pred.to(device)
+
     u, c = aff_pred.unique(return_counts=True)
-    for a,b in tqdm(zip(u, c)):
+    for a, b in tqdm(zip(u, c)):
         if b < 500:
             aff_pred[aff_pred == a] = 0
 
-
-    print('SKOOTS IOU')
-    if not os.path.exists('../../tests/iou_gt_skoots_mask.trch'):
-        iou_skoots = mask_iou(gt, pred)
-        torch.save(iou_skoots, '../../tests/iou_gt_skoots_mask.trch')
-    else:
-        iou_skoots = torch.load('../../tests/iou_gt_skoots_mask.trch')
-
-    print('AFFINITES IOU')
-    if not os.path.exists('../../tests/iou_gt_affinites_mask.trch'):
-        iou_aff = mask_iou(gt, aff_pred)
-        torch.save(iou_aff, '../../tests/iou_gt_affinites_mask.trch')
-    else:
-        iou_aff = torch.load('../../tests/iou_gt_affinites_mask.trch')
-
-    # iou_skoots = torch.load('../../tests/iou_gt_skoots_mask.trch')
-    # iou_aff = torch.load('../../tests/iou_gt_affinites_mask.trch')
+    skoots_seg_errors = get_segmentation_errors(gt, pred)
+    aff_seg_errors = get_segmentation_errors(gt, aff_pred)
 
 
-
-    tfp_skoots = [accuracies_from_iou(iou_skoots, thr/100) for thr in range(100)]
-    tfp_aff = [accuracies_from_iou(iou_aff, thr/100) for thr in range(100)]
-
-    precision_skoots = [(tp /(tp + fp)) for (tp, fp, fn) in tfp_skoots]
-    recall_skoots = [(tp / (tp + fn)) for (tp, fp, fn) in tfp_skoots]
-
-    precision_aff = [(tp/(tp+fp)) for (tp, fp, fn) in tfp_aff]
-    recall_aff = [(tp / (tp + fn)) for (tp, fp, fn) in tfp_aff]
-
-    f1_skoots = [f1_score(*a) for a in tfp_skoots]
-    f1_aff = [f1_score(*a) for a in tfp_aff]
-
-    plt.plot(np.arange(0, 100), precision_skoots)
-    plt.plot(np.arange(0, 100), precision_aff)
-    plt.legend(['SKOOTS', 'AFFINITIES'])
-    plt.ylabel('Precision')
-    plt.xlabel('IoU Threshold: (%)')
-    plt.show()
-
-    plt.plot(np.arange(0, 100), recall_skoots)
-    plt.plot(np.arange(0, 100), recall_aff)
-    plt.legend(['SKOOTS', 'AFFINITIES'])
-    plt.ylabel('Recall')
-    plt.xlabel('IoU Threshold: (%)')
-    plt.show()
-
-    plt.plot(np.arange(0, 100), f1_skoots)
-    plt.plot(np.arange(0, 100), f1_aff)
-    plt.legend(['SKOOTS', 'AFFINITIES'])
-    plt.ylabel('F1')
-    plt.xlabel('IoU Threshold: (%)')
-    plt.show()
-
+    # print('SKOOTS IOU')
+    # if not os.path.exists('../../tests/iou_gt_skoots_mask.trch'):
+    #     iou_skoots = mask_iou(gt, pred)
+    #     torch.save(iou_skoots, '../../tests/iou_gt_skoots_mask.trch')
+    # else:
+    #     iou_skoots = torch.load('../../tests/iou_gt_skoots_mask.trch')
     #
-
+    # print('AFFINITES IOU')
+    # if not os.path.exists('../../tests/iou_gt_affinites_mask.trch'):
+    #     iou_aff = mask_iou(gt, aff_pred)
+    #     torch.save(iou_aff, '../../tests/iou_gt_affinites_mask.trch')
+    # else:
+    #     iou_aff = torch.load('../../tests/iou_gt_affinites_mask.trch')
     #
-
-    # labels, boxes = mask_to_bbox(gt.cuda())
-    # ind = valid_box_inds(boxes)
-    # ground_truth = {'labels': labels[ind], 'boxes': boxes[:, ind]}
+    # # iou_skoots = torch.load('../../tests/iou_gt_skoots_mask.trch')
+    # # iou_aff = torch.load('../../tests/iou_gt_affinites_mask.trch')
     #
-    # labels, boxes = mask_to_bbox(pred.cuda())
-    # ind = valid_box_inds(boxes)
-    # predictions = {'labels': labels[ind], 'boxes': boxes[:, ind]}
     #
-    # labels, boxes = mask_to_bbox(aff_pred.cuda())
-    # ind = valid_box_inds(boxes)
-    # aff_predictions = {'labels': labels[ind], 'boxes': boxes[:, ind]}
     #
-    # ap = []
-    # recall = []
-    # for i in range(100):
-    #     i /= 100
-    #     tp, fp, fn = calculate_accuracies_from_bbox(ground_truth, predictions, threshold=i)
-    #     ap.append(tp / (tp + fp))
-    #     recall.append(tp / (tp + fn))
+    # tfp_skoots = [accuracies_from_iou(iou_skoots, thr/100) for thr in range(100)]
+    # tfp_aff = [accuracies_from_iou(iou_aff, thr/100) for thr in range(100)]
     #
-    # ap = [a.cpu().numpy() for a in ap]
-    # recall = [r.cpu().numpy() for r in recall]
-    # plt.plot(np.arange(0, 100), ap)
+    # precision_skoots = [(tp /(tp + fp)) for (tp, fp, fn) in tfp_skoots]
+    # recall_skoots = [(tp / (tp + fn)) for (tp, fp, fn) in tfp_skoots]
     #
-    # ap = []
-    # recall = []
-    # for i in range(100):
-    #     i /= 100
-    #     tp, fp, fn = calculate_accuracies_from_bbox(ground_truth, aff_predictions, threshold=i)
-    #     ap.append(tp / (tp + fp))
-    #     recall.append(tp / (tp + fn))
+    # precision_aff = [(tp/(tp+fp)) for (tp, fp, fn) in tfp_aff]
+    # recall_aff = [(tp / (tp + fn)) for (tp, fp, fn) in tfp_aff]
     #
-    # ap = [a.cpu().numpy() for a in ap]
-    # recall = [r.cpu().numpy() for r in recall]
-    # plt.plot(np.arange(0, 100), ap)
+    # f1_skoots = [f1_score(*a) for a in tfp_skoots]
+    # f1_aff = [f1_score(*a) for a in tfp_aff]
     #
-    # plt.ylabel('AP')
+    # plt.plot(np.arange(0, 100), precision_skoots)
+    # plt.plot(np.arange(0, 100), precision_aff)
+    # plt.legend(['SKOOTS', 'AFFINITIES'])
+    # plt.ylabel('Precision')
+    # plt.xlabel('IoU Threshold: (%)')
+    # plt.show()
+    #
+    # plt.plot(np.arange(0, 100), recall_skoots)
+    # plt.plot(np.arange(0, 100), recall_aff)
+    # plt.legend(['SKOOTS', 'AFFINITIES'])
+    # plt.ylabel('Recall')
+    # plt.xlabel('IoU Threshold: (%)')
+    # plt.show()
+    #
+    # plt.plot(np.arange(0, 100), f1_skoots)
+    # plt.plot(np.arange(0, 100), f1_aff)
+    # plt.legend(['SKOOTS', 'AFFINITIES'])
+    # plt.ylabel('F1')
     # plt.xlabel('IoU Threshold: (%)')
     # plt.show()

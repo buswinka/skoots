@@ -79,7 +79,7 @@ def train(rank: str,
                    transforms=augmentations,
                    sample_per_image=32,
                    device=device,
-                   pad_size=10).to('cpu')
+                   pad_size=10).to(device)
 
     print('data yes')
 
@@ -125,12 +125,12 @@ def train(rank: str,
 
     # The constants dict contains everything needed to replicate a training run.
     # will get serialized and saved.
-    epochs = 100
+    epochs = 10000
     constants = {
         'model': model,
         'vector_scale': vector_scale,
         'anisotropy': anisotropy,
-        'lr': 5e-4 / 5, #5e-4,
+        'lr': 5e-4 / 3, #5e-4,
         'wd': 1e-6 / 0.33, #1e-6,
         'optimizer': partial(Lion, use_triton=False), #partial(torch.optim.AdamW, eps=1e-16),
         'scheduler': partial(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, T_0=epochs+ 1),
@@ -147,6 +147,7 @@ def train(rank: str,
         'distributed': True,
         'mixed_precision': True,
         'rank': rank,
+        'n_warmup': 1500,
         'savepath': '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models',
     }
 
