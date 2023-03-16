@@ -1,77 +1,23 @@
-import gunpowder as gp
-import numpy as np
 import time
-import logging
 from scipy.ndimage import convolve, gaussian_filter
-from numpy.lib.stride_tricks import as_strided
 from typing import Tuple, List, Dict, Optional
 
 import torch
 from torch import Tensor
 import torch.nn.functional as F
 
-from skoots.lib.morphology import gauss_filter
-
-logger = logging.getLogger(__name__)
-
-
-def get_local_shape_descriptors(
-        segmentation,
-        sigma,
-        components=None,
-        voxel_size=None,
-        roi=None,
-        labels=None,
-        mode="gaussian",
-        downsample=1,
-):
-    """
-    Compute local shape descriptors for the given segmentation.
-    Args:
-        segmentation (``np.array`` of ``int``):
-            A label array to compute the local shape descriptors for.
-        sigma (``tuple`` of ``float``):
-            The radius to consider for the local shape descriptor.
-        components (``string`` of ``int``, optional):
-            The components of the local shape descriptors to compute and return.
-            "012" returns the first three components. "0129" returns the first
-            three and last components if 3D, "0125" if 2D. Components must be in
-            ascending order. Defaults to all components. Valid component
-            combinations can be seen in tests folder (components test).
-            Component string lookup, where example component : "3D axes", "2D axes"
-                mean offset (mean) : "012", "01"
-                orthogonal covariance (ortho) : "345", "23"
-                diagonal covariance (diag) : "678", "4"
-                size : "9", "5"
-            example combinations:
-                diag + size : "6789", "45"
-                mean + diag + size : "0126789", "0145"
-                mean + ortho + diag : "012345678", "01234"
-                ortho + diag : "345678", "234"
-        voxel_size (``tuple`` of ``int``, optional):
-            The voxel size of ``segmentation``. Defaults to 1.
-        roi (``gunpowder.Roi``, optional):
-            Restrict the computation to the given ROI.
-        labels (array-like of ``int``, optional):
-            Restrict the computation to the given labels. Defaults to all
-            labels inside the ``roi`` of ``segmentation``.
-        mode (``string``, optional):
-            Either ``gaussian`` or ``sphere``. Determines over what region
-            the local shape descriptor is computed. For ``gaussian``, a
-            Gaussian with the given ``sigma`` is used, and statistics are
-            averaged with corresponding weights. For ``sphere``, a sphere
-            with radius ``sigma`` is used. Defaults to 'gaussian'.
-        downsample (``int``, optional):
-            Compute the local shape descriptor on a downsampled volume for
-            faster processing. Defaults to 1 (no downsampling).
-    """
-    return LsdExtractor(sigma, mode, downsample).get_descriptors(
-        segmentation, components, voxel_size, roi, labels
-    )
-
 
 def __outer_product(input_array: Tensor) -> Tensor:
-    """ computs the unique values of the outer products of the first dim (coord dim) for input """
+    """
+    Computs the unique values of the outer products of the first dim (coord dim) for input.
+    Ripped straight from the LSD implementation, but in torch
+
+    Shapes:
+        - input_array: :math:`(C, Z, X, Y)`
+        - returns: :math:`(C*C, Z, X, Y)`
+
+    :param: input array
+    """
     k = input_array.shape[0]
     outer = torch.einsum("i...,j...->ij...", input_array, input_array)
 
@@ -82,33 +28,50 @@ def __get_stats(coords: Tensor, mask: Tensor,
                 sigma_voxel: Tuple[float, ...],
                 sigma: Tuple[float, ...]) -> Tensor:
     """
+    Function computes unscaled shape statistics.
 
+    Stats [0, 1, 2] are for the mean offset
+    Stats [3, 4, 5] are the variance
+    Stats [6, 7, 8] are the pearson covariance
+    Stats [9] is the distance
 
-    :param coords: Meshgrid with shape (3, Z, X, Y)
-    :param mask: mask with shape (Z, X, Y)
+    None are nomalized!
+
+    Shapes:
+        - coords: :math:`(3, Z_{in}, X_{in}, Y_{in}`
+        - mask: :math:`(Z_{in}, X_{in}, Y_{in}`
+        - sigma_voxel: :math:`(3)`
+        - sigma: :math:`(3)`
+        - returns: :math:`(10, Z_{in}, X_{in}, Y_{in}`
+
+    :param coords: Meshgrid of indicies
+    :param mask: torch.int instance segmentation mask
     :param sigma_voxel: sigma / voxel for each dim
-    :param sub_roi:
-    :param components:
-    :return:
+    :param sigma: standard deviation for bluring at each spatial dim
+    :return: Statistics for each instance of the instance segmentation mask
     """
-    masked_coords = coords * mask
-    count = __aggregate(mask, sigma_voxel)
 
-    count_len = len(count.shape)  # should always be 3 right?
+    assert coords.ndim == 4
+    assert mask.ndim == 3
+    assert coords.device == mask.device
 
-    count[count == 0] = 1
+    masked_coords: Tensor = coords * mask
+    count: Tensor = __aggregate(mask, sigma_voxel)
 
-    mean = [__aggregate(masked_coords[d], sigma_voxel).unsqueeze(0) for d in range(count_len)]
-    mean = torch.concatenate(mean, dim=0).div(count)
+    count[count == 0] = 1  # done for numerical stability.
 
-    mean_offset = mean - coords
+    n_spatial_dims = len(count.shape)  # should always be 3
+
+    mean: List[Tensor] = [__aggregate(masked_coords[d], sigma_voxel).unsqueeze(0) for d in range(n_spatial_dims)]
+    mean: Tensor = torch.concatenate(mean, dim=0).div(count)
+
+    mean_offset: Tensor = mean - coords
 
     # covariance
-    coords_outer = __outer_product(masked_coords)
+    coords_outer: Tensor = __outer_product(masked_coords)  # [9, X, Y, Z]
 
     entries = [0, 4, 8, 1, 2, 5]
-    covariance = torch.concatenate([__aggregate(coords_outer[d], sigma_voxel).unsqueeze(0) for d in entries], dim=0)
-
+    covariance: Tensor = torch.concatenate([__aggregate(coords_outer[d], sigma_voxel).unsqueeze(0) for d in entries], dim=0)
     covariance.div_(count).sub_(__outer_product(mean)[entries])  # in place for memory
 
     variance = covariance[[0, 1, 2], ...]
@@ -118,48 +81,16 @@ def __get_stats(coords: Tensor, mask: Tensor,
 
     # normalize Pearson correlation coefficient
     variance[variance < 1e-3] = 1e-3  # numerical stability
-    pearson[0] /= torch.sqrt(variance[0, ...] * variance[1, ...])
-    pearson[1] /= torch.sqrt(variance[0, ...] * variance[2, ...])
-    pearson[2] /= torch.sqrt(variance[1, ...] * variance[2, ...])
+    pearson[0, ...] /= torch.sqrt(variance[0, ...] * variance[1, ...])
+    pearson[1, ...] /= torch.sqrt(variance[0, ...] * variance[2, ...])
+    pearson[2, ...] /= torch.sqrt(variance[1, ...] * variance[2, ...])
 
     # normalize variances to interval [0, 1]
-    variance[0] /= sigma[0] ** 2
-    variance[1] /= sigma[1] ** 2
-    variance[2] /= sigma[2] ** 2
+    variance[0, ...] /= sigma[0] ** 2
+    variance[1, ...] /= sigma[1] ** 2
+    variance[2, ...] /= sigma[2] ** 2
 
     return torch.concatenate((mean_offset, variance, pearson, count.unsqueeze(0)), dim=0)
-
-
-# def __aggregate_torch_stacked1D(input_array: Tensor,  sigma: Tuple[float, ...]) -> Tensor:
-#     """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
-#
-#     # Separable 1D convolution
-#     vol_in = vol[None, None, ...]
-#     # k2d = torch.einsum('i,j->ij', k, k)
-#     # k2d = k2d / k2d.sum() # not necessary if kernel already sums to zero, check:
-#     # print(f'{k2d.sum()=}')
-#     k1d = k[None, None, :, None, None]
-#     for i in range(3):
-#         vol_in = vol_in.permute(0, 1, 4, 2, 3)
-#         vol_in = F.conv3d(vol_in, k1d, stride=1, padding=(len(k) // 2, 0, 0))
-#     vol_3d_sep = vol_in
-#     print((vol_3d - vol_3d_sep).abs().max())  # something ~1e-7
-#     print(torch.allclose(vol_3d, vol_3d_sep))  # allclose checks if it is around 1e-8
-
-
-def __aggregate_(input_array: Tensor, sigma: Tuple[float, ...]):
-    """
-    Basically just blurs. Different if doing with a sphere, but fuck it
-
-    :param input_array: (X, Y, Z) tensor
-    :param sigma:
-    :return:
-    """
-
-    _radius = tuple(round(3.0 * s) for s in sigma)
-    _kernel = tuple(2 * r + 1 for r in _radius)  # holy fuck with a large sigma this gets huge
-
-    return gauss_filter(input_array.unsqueeze(0).unsqueeze(0), kernel=_kernel, sigma=sigma).squeeze()
 
 
 def __aggregate_default(input_array: Tensor, sigma: Tuple[float, ...]):
@@ -175,28 +106,51 @@ def __aggregate_default(input_array: Tensor, sigma: Tuple[float, ...]):
     return torch.from_numpy(
         gaussian_filter(input_array.cpu().numpy(), sigma=sigma, mode="constant", cval=0.0, truncate=3.0)).to(device)
 
-def make_gaussian_kernel_1d(sigma):
-    """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
+
+def make_gaussian_kernel_1d(sigma: float, device: torch.device = 'cpu') -> Tensor:
+    """
+    ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch
+
+    :param sigma: standard deviation of gaussian kernel
+    :param device: torch device to put kernel on
+    :return: 1d gaussian kernel
+    """
     kernel_size = int(2 * round(sigma * 3.0) + 1)
-    ts = torch.linspace(-kernel_size // 2, kernel_size // 2 + 1, kernel_size)
+    ts = torch.linspace(-kernel_size // 2, kernel_size // 2 + 1, kernel_size, device=device)
     gauss = torch.exp((-(ts / sigma) ** 2 / 2))
     kernel = gauss / gauss.sum()
 
     return kernel
 
+
 def __aggregate(array: Tensor, sigma: Tuple[float, ...]) -> Tensor:
+    """
+    Performs a 3D gaussian blur on the input tensor using repeated 1D convolutions.
+    Has slight numerical differences to the native LSD implementation, but Im not paid enough
+    to figure that out.
 
-    """ performs a 3d gaussian by repeated 1D bluring """
-    assert array.ndim == 3
-    assert len(sigma) == 3
+    Shapes:
+        - array: :math:`(Z_{in}, X_{in}, Y_{in})`
+        - sigma: :math: `(3)`
+        - returns :math:`(Z_{in}, X_{in}, Y_{in})`
 
-    array = array.reshape(1, 1, *array.shape)
+    :param array: input array to blur
+    :param sigma: tuple of standard deviations for each dimension
+    :return: blurred array
+    """
+
+    assert array.ndim == 3, 'Array must be 3D with shape (Z, X, Y)'
+    assert len(sigma) == 3, 'Must provide 3 sigma values, one for each spatial dimension'
+
+    z, x, y = array.shape
+    array = array.reshape(1, 1, z, x, y)
+    device = array.device
 
     # Separable 1D convolution
     for i in range(3):
 
         # 3d convolution need 5D tensor (B, C, X, Y, Z)
-        kernel: Tensor = make_gaussian_kernel_1d(sigma[i]).view(1, 1, -1, 1, 1)
+        kernel: Tensor = make_gaussian_kernel_1d(sigma=sigma[i], device=device).view(1, 1, -1, 1, 1)
         pad: Tuple[int] = tuple(int((k - 1) // 2) for k in kernel.shape[2::])
 
         array = array.permute(0, 1, 4, 2, 3)
@@ -205,23 +159,29 @@ def __aggregate(array: Tensor, sigma: Tuple[float, ...]) -> Tensor:
     return array.squeeze(0).squeeze(0)
 
 
-def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tuple[int, int, int] | None = None):
+def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tuple[int, int, int]):
     """
     Pytorch reimplementation of local-shape-descriptors without gunpowder.
-    Credit goes to Jan and Arlo
+    Credit goes to Jan and Arlo.
 
-    Never downsamples, always computes the lsd's for every label. Uses a guassian instead of sphere.
+    Never downsamples, always computes the lsd's for every label. Uses a guassian instead of sphere
 
-    base implementation assumes numpy ordering (Z, X, Y), we will also do so.
+    Base implementation assumes numpy ordering (Z, X, Y), therefore all code uses this ordering, however we
+    expect inputs to be in the form (1, X, Y, Z) and outputs to be in the form: (10, X, Y, Z)
 
     Shapes:
-        - segmentation: (Z, X, Y)
+        - segmentation: (X, Y, Z)
+        - sigma: (3)
+        - voxel_size: (3)
+        - returns: (C=10, X, Y, Z)
 
     :param segmentation:  label array to compute the local shape descriptors for
     :param sigma: The radius to consider for the local shape descriptor.
     :param voxel_size:
-    :return: lsd
+    :return: local shape descriptors
     """
+
+    segmentation = segmentation.squeeze(0).permute(2, 0, 1)
 
     device = segmentation.device
 
@@ -229,8 +189,9 @@ def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tup
     labels = torch.unique(segmentation)
 
     descriptors = torch.zeros((10, shape[0], shape[1], shape[2]), dtype=torch.float, device=device)
-    sigma_voxel: Tuple[float, ...] = tuple(s / v for s, v in zip(sigma, voxel_size))
+    sigma_voxel = [s / v for s, v in zip(sigma, voxel_size)]
 
+    # Grid of indexes for computing the descriptors. Can be cached.
     grid = torch.meshgrid(
         torch.arange(0, shape[0] * voxel_size[0], voxel_size[0], device=device),
         torch.arange(0, shape[1] * voxel_size[1], voxel_size[1], device=device),
@@ -239,7 +200,7 @@ def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tup
     grid = [g.unsqueeze(0) for g in grid]
     grid = torch.concatenate(grid, dim=0)
 
-    for label in labels:
+    for label in labels:  # do this for each instance
         if label == 0: continue
 
         mask = (segmentation == label).float()
@@ -248,494 +209,21 @@ def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tup
 
     max_distance = torch.tensor(sigma, dtype=torch.float, device=device)
 
-    # correct descriptors for propper scaling
-    # descriptors[[0, 1, 2], ...].div_(max_distance.view(3, 1, 1, 1)).mul_(0.5).add_(0.5)
+    # correct descriptors for proper scaling
     descriptors[[0, 1, 2], ...] = (
             descriptors[[0, 1, 2], ...] / max_distance[:, None, None, None] * 0.5
             + 0.5
     )
     # pearsons in [0, 1]
-    # descriptors[[6, 7, 8], ...].mul_(0.5).add_(0.5)
     descriptors[[6, 7, 8], ...] = descriptors[[6, 7, 8], ...] * 0.5 + 0.5
 
     # reset background to 0
     descriptors[[0, 1, 2, 6, 7, 8], ...] *= segmentation != 0
 
+    # Clamp to reasonable values
     torch.clamp(descriptors, 0, 1, out=descriptors)
 
-    return descriptors
-
-
-class LsdExtractor(object):
-    def __init__(self, sigma, mode="gaussian", downsample=1):
-        """
-        Create an extractor for local shape descriptors. The extractor caches
-        the data repeatedly needed for segmentations of the same size. If this
-        is not desired, `func:get_local_shape_descriptors` should be used
-        instead.
-        Args:
-            sigma (``tuple`` of ``float``):
-                The radius to consider for the local shape descriptor.
-            mode (``string``, optional):
-                Either ``gaussian`` or ``sphere``. Determines over what region
-                the local shape descriptor is computed. For ``gaussian``, a
-                Gaussian with the given ``sigma`` is used, and statistics are
-                averaged with corresponding weights. For ``sphere``, a sphere
-                with radius ``sigma`` is used. Defaults to 'gaussian'.
-            downsample (``int``, optional):
-                Compute the local shape descriptor on a downsampled volume for
-                faster processing. Defaults to 1 (no downsampling).
-        """
-        self.sigma = sigma
-        self.mode = mode
-        self.downsample = downsample
-        self.coords = {}
-
-    def get_descriptors(
-            self, segmentation, components=None, voxel_size: Tuple[int] = None, roi=None, labels=None
-    ):
-        """Compute local shape descriptors for a given segmentation.
-        Args:
-            segmentation (``np.array`` of ``int``):
-                A label array to compute the local shape descriptors for.
-            components (``string`` of ``int``, optional):
-                The components of the local shape descriptors to compute and return.
-                "012" returns the first three components. "0129" returns the first three and
-                last components if 3D, "0125" if 2D. Components must be in ascending order.
-                Defaults to all components.
-            voxel_size (``tuple`` of ``int``, optional):
-                The voxel size of ``segmentation``. Defaults to 1.
-            roi (``gunpowder.Roi``, optional):
-                Restrict the computation to the given ROI in voxels.
-            labels (array-like of ``int``, optional):
-                Restrict the computation to the given labels. Defaults to all
-                labels inside the ``roi`` of ``segmentation``.
-        """
-
-        dims = len(segmentation.shape)
-
-        if voxel_size is None:
-            voxel_size = gp.Coordinate((1,) * dims)
-        else:
-            voxel_size = gp.Coordinate(voxel_size)
-
-        if roi is None:
-            roi = gp.Roi((0,) * dims, segmentation.shape)
-
-        roi_slices = roi.to_slices()
-        print(f'{roi_slices=}')
-
-        if labels is None:
-            labels = np.unique(segmentation[roi_slices])
-
-        # get number of channels
-        if components is None:
-            if dims == 2:
-                self.sigma = self.sigma[0:2]
-                channels = 6
-            elif dims == 3:
-                channels = 10
-            else:
-                raise AssertionError(f"Segmentation shape has {dims} dims.")
-
-        else:
-            channels = len(components)
-
-        # prepare full-res descriptor volumes for roi
-        descriptors = np.zeros((channels,) + roi.get_shape(), dtype=np.float32)
-        # get sub-sampled shape, roi, voxel size and sigma
-        df = self.downsample
-        logger.debug(
-            "Downsampling segmentation %s with factor %f", segmentation.shape, df
-        )
-
-        sub_shape = tuple(s / df for s in segmentation.shape)
-        sub_roi = roi / df
-        assert sub_roi * df == roi, (
-                "Segmentation shape %s is not a multiple of downsampling factor "
-                "%d (sub_roi=%s, roi=%s)."
-                % (segmentation.shape, self.downsample, sub_roi, roi)
-        )
-        sub_voxel_size = tuple(v * df for v in voxel_size)
-        sub_sigma_voxel = tuple(s / v for s, v in zip(self.sigma, sub_voxel_size))
-
-        logger.debug("Downsampled shape: %s", sub_shape)
-        logger.debug("Downsampled voxel size: %s", sub_voxel_size)
-        logger.debug("Sigma in voxels: %s", sub_sigma_voxel)
-
-        # prepare coords volume (reuse if we already have one)
-        if (sub_shape, sub_voxel_size) not in self.coords:
-
-            logger.debug("Create meshgrid...")
-
-            try:
-                # 3d by default
-                grid = np.meshgrid(
-                    np.arange(0, sub_shape[0] * sub_voxel_size[0], sub_voxel_size[0]),
-                    np.arange(0, sub_shape[1] * sub_voxel_size[1], sub_voxel_size[1]),
-                    np.arange(0, sub_shape[2] * sub_voxel_size[2], sub_voxel_size[2]),
-                    indexing="ij",
-                )
-
-            except:
-
-                grid = np.meshgrid(
-                    np.arange(0, sub_shape[0] * sub_voxel_size[0], sub_voxel_size[0]),
-                    np.arange(0, sub_shape[1] * sub_voxel_size[1], sub_voxel_size[1]),
-                    indexing="ij",
-                )
-
-            self.coords[(sub_shape, sub_voxel_size)] = np.array(grid, dtype=np.float32)
-
-        coords = self.coords[(sub_shape, sub_voxel_size)]
-
-        # for all labels
-        for label in labels:
-
-            if label == 0:
-                continue
-
-            logger.debug("Creating shape descriptors for label %d", label)
-
-            mask = (segmentation == label).astype(np.float32)
-            logger.debug("Label mask %s", mask.shape)
-
-            try:
-                # 3d by default
-                sub_mask = mask[::df, ::df, ::df]
-
-            except:
-                sub_mask = mask[::df, ::df]
-
-            logger.debug("Downsampled label mask %s", sub_mask.shape)
-
-            sub_descriptor = np.concatenate(
-                self.__get_stats(coords, sub_mask, sub_sigma_voxel, sub_roi, components)
-            )
-
-            logger.debug("Upscaling descriptors...")
-            start = time.time()
-            descriptor = self.__upsample(sub_descriptor, df)
-            logger.debug("%f seconds", time.time() - start)
-
-            logger.debug("Accumulating descriptors...")
-            start = time.time()
-            descriptors += descriptor * mask[roi_slices]
-            logger.debug("%f seconds", time.time() - start)
-
-        # normalize stats
-
-        # get max possible mean offset for normalization
-        if self.mode == "gaussian":
-            # farthest voxel in context is 3*sigma away, but due to Gaussian
-            # weighting, sigma itself is probably a better upper bound
-            max_distance = np.array([s for s in self.sigma], dtype=np.float32)
-        elif self.mode == "sphere":
-            # farthest voxel in context is sigma away, but this is almost
-            # impossible to reach as offset -- let's take half sigma
-            max_distance = np.array([0.5 * s for s in self.sigma], dtype=np.float32)
-        if dims == 3:
-
-            # mean offsets (z,y,x) = [0,1,2]
-            # covariance (zz,yy,xx) = [3,4,5]
-            # pearsons (zy,zx,yx) = [6,7,8]
-            # size = [9]
-
-            if components is None:
-
-                # mean offsets in [0, 1]
-                descriptors[[0, 1, 2]] = (
-                        descriptors[[0, 1, 2]] / max_distance[:, None, None, None] * 0.5
-                        + 0.5
-                )
-                # pearsons in [0, 1]
-                descriptors[[6, 7, 8]] = descriptors[[6, 7, 8]] * 0.5 + 0.5
-                # reset background to 0
-                descriptors[[0, 1, 2, 6, 7, 8]] *= segmentation[roi_slices] != 0
-
-            else:
-
-                for i, c in enumerate(components):
-
-                    c = int(c)
-
-                    if c in range(0, 3):
-                        descriptors[[i]] = (
-                                descriptors[[i]] / max_distance[c, None, None, None] * 0.5
-                                + 0.5
-                        )
-                        descriptors[[i]] *= segmentation[roi_slices] != 0
-
-                    elif c in range(6, 9):
-                        descriptors[[i]] = descriptors[[i]] * 0.5 + 0.5
-                        descriptors[[i]] *= segmentation[roi_slices] != 0
-
-                    else:
-                        pass
-
-        else:
-
-            # mean offsets (y,x) = [0,1]
-            # covariance (yy,xx) = [2,3]
-            # pearsons (yx) = [4]
-            # size = [5]
-
-            if components is None:
-
-                # mean offsets in [0, 1]
-                descriptors[[0, 1]] = (
-                        descriptors[[0, 1]] / max_distance[:, None, None] * 0.5 + 0.5
-                )
-                # pearsons in [0, 1]
-                descriptors[[4]] = descriptors[[4]] * 0.5 + 0.5
-                # reset background to 0
-                descriptors[[0, 1, 4]] *= segmentation[roi_slices] != 0
-
-            else:
-
-                for i, c in enumerate(components):
-
-                    c = int(c)
-
-                    if c in range(0, 2):
-                        descriptors[[i]] = (
-                                descriptors[[i]] / max_distance[c, None, None] * 0.5 + 0.5
-                        )
-                        descriptors[[i]] *= segmentation[roi_slices] != 0
-
-                    elif c == 4:
-                        descriptors[[i]] = descriptors[[i]] * 0.5 + 0.5
-                        descriptors[[i]] *= segmentation[roi_slices] != 0
-
-        # clip outliers
-        np.clip(descriptors, 0.0, 1.0, out=descriptors)
-        return descriptors
-
-    def __get_stats(self, coords, mask, sigma_voxel, roi, components):
-
-        # mask for object
-        masked_coords = coords * mask
-
-        # number of inside voxels
-        logger.debug("Counting inside voxels...")
-        start = time.time()
-        count = self.__aggregate(mask, sigma_voxel, self.mode, roi)
-
-        count_len = len(count.shape)
-
-        # avoid division by zero
-        count[count == 0] = 1
-        logger.debug("%f seconds", time.time() - start)
-
-        # mean
-        logger.debug("Computing mean position of inside voxels...")
-        start = time.time()
-
-        mean = np.array(
-            [
-                self.__aggregate(masked_coords[d], sigma_voxel, self.mode, roi)
-                for d in range(count_len)
-            ]
-        )
-
-        mean /= count
-
-        logger.debug("%f seconds", time.time() - start)
-
-        if components is not None:
-            calc_mean_offset = True in [
-                str(comp) in components for comp in range(count_len)
-            ]
-            calc_covariance = True in [
-                str(comp) in components for comp in range(count_len, 4 * count_len - 3)
-            ]
-
-        if components is None or calc_mean_offset:
-            logger.debug("Computing offset of mean position...")
-            start = time.time()
-            mean_offset = mean - coords[(slice(None),) + roi.to_slices()]
-
-        # covariance
-        if components is None or calc_covariance:
-            logger.debug("Computing covariance...")
-            coords_outer = self.__outer_product(masked_coords)
-
-            # remove duplicate entries in covariance
-            entries = [0, 4, 8, 1, 2, 5] if count_len == 3 else [0, 3, 1]
-
-            covariance = np.array(
-                [
-                    self.__aggregate(coords_outer[d], sigma_voxel, self.mode, roi)
-                    # 3d:
-                    # 0 1 2
-                    # 3 4 5
-                    # 6 7 8
-                    # 2d:
-                    # 0 1
-                    # 2 3
-                    for d in entries
-                ]
-            )
-
-            covariance /= count
-            covariance -= self.__outer_product(mean)[entries]
-
-            logger.debug("%f seconds", time.time() - start)
-
-            if count_len == 3:
-
-                # variances of z, y, x coordinates
-                variance = covariance[[0, 1, 2]]
-
-                # Pearson coefficients of zy, zx, yx
-                pearson = covariance[[3, 4, 5]]
-
-                # normalize Pearson correlation coefficient
-                variance[variance < 1e-3] = 1e-3  # numerical stability
-                pearson[0] /= np.sqrt(variance[0] * variance[1])
-                pearson[1] /= np.sqrt(variance[0] * variance[2])
-                pearson[2] /= np.sqrt(variance[1] * variance[2])
-
-                # normalize variances to interval [0, 1]
-                variance[0] /= self.sigma[0] ** 2
-                variance[1] /= self.sigma[1] ** 2
-                variance[2] /= self.sigma[2] ** 2
-
-            else:
-
-                # variances of y, x coordinates
-                variance = covariance[[0, 1]]
-
-                # Pearson coefficients of yx
-                pearson = covariance[[2]]
-
-                # normalize Pearson correlation coefficient
-                variance[variance < 1e-3] = 1e-3  # numerical stability
-                pearson /= np.sqrt(variance[0] * variance[1])
-
-                # normalize variances to interval [0, 1]
-                variance[0] /= self.sigma[0] ** 2
-                variance[1] /= self.sigma[1] ** 2
-
-        if components is not None:
-
-            ret = tuple()
-
-            for i in components:
-
-                i = int(i)
-
-                if count_len == 3:
-
-                    if i in range(0, 3):
-                        ret += (mean_offset[[i]],)
-                    elif i in range(3, 6):
-                        ret += (variance[[i - 3]],)
-                    elif i in range(6, 9):
-                        ret += (pearson[[i - 6]],)
-                    elif i == 9:
-                        ret += (count[None, :],)
-                    else:
-                        raise AssertionError(
-                            f"3D lsds have components in range(0,10), encountered {i}"
-                        )
-
-                elif count_len == 2:
-
-                    if i in range(0, 2):
-                        ret += (mean_offset[[i]],)
-                    elif i in range(2, 4):
-                        ret += (variance[[i - 2]],)
-                    elif i == 4:
-                        ret += (pearson,)
-                    elif i == 5:
-                        ret += (count[None, :],)
-                    else:
-                        raise AssertionError(
-                            f"2D lsds have components in range(0,6), encountered {i}"
-                        )
-
-                else:
-                    raise AssertionError(f"Number of dims was found to be {count_len}")
-
-        else:
-            ret = (mean_offset, variance, pearson, count[None, :])
-
-        return ret
-
-    def __make_sphere(self, radius):
-
-        logger.debug("Creating sphere with radius %d...", radius)
-
-        r2 = np.arange(-radius, radius) ** 2
-        dist2 = r2[:, None, None] + r2[:, None] + r2
-        return (dist2 <= radius ** 2).astype(np.float32)
-
-    def __aggregate(self, array, sigma, mode="gaussian", roi=None):
-
-        if roi is None:
-            roi_slices = (slice(None),)
-        else:
-            roi_slices = roi.to_slices()
-
-        if mode == "gaussian":
-
-            out = gaussian_filter(
-                array, sigma=sigma, mode="constant", cval=0.0, truncate=3.0
-            )[roi_slices]
-
-            return out
-        elif mode == "sphere":
-
-            radius = sigma[0]
-            for d in range(len(sigma)):
-                assert (
-                        radius == sigma[d]
-                ), "For mode 'sphere', only isotropic sigma is allowed."
-
-            sphere = self.__make_sphere(radius)
-            return convolve(array, sphere, mode="constant", cval=0.0)[roi_slices]
-
-        else:
-            raise RuntimeError("Unknown mode %s" % mode)
-
-    def get_context(self):
-
-        """Return the context needed to compute the LSDs."""
-
-        if self.mode == "gaussian":
-            return tuple((3.0 * s for s in self.sigma))
-        elif self.mode == "sphere":
-            return self.sigma
-
-    def __outer_product(self, array):
-
-        """Computes the unique values of the outer products of the first dimension
-        of ``array``. If ``array`` has shape ``(k, d, h, w)``, for example, the
-        output will be of shape ``(k*(k+1)/2, d, h, w)``.
-        """
-        k = array.shape[0]
-        outer = np.einsum("i...,j...->ij...", array, array)
-        return outer.reshape((k ** 2,) + array.shape[1:])
-
-    def __upsample(self, array, f):
-
-        shape = array.shape
-        stride = array.strides
-
-        if len(array.shape) == 4:
-            sh = (shape[0], shape[1], f, shape[2], f, shape[3], f)
-            st = (stride[0], stride[1], 0, stride[2], 0, stride[3], 0)
-        else:
-            sh = (shape[0], shape[1], f, shape[2], f)
-            st = (stride[0], stride[1], 0, stride[2], 0)
-
-        view = as_strided(array, sh, st)
-
-        l = [shape[0]]
-        [l.append(shape[i + 1] * f) for i, j in enumerate(shape[1:])]
-
-        return view.reshape(l)
+    return descriptors.permute(0, 2, 3, 1)
 
 
 if __name__ == '__main__':
@@ -783,8 +271,9 @@ if __name__ == '__main__':
     crop = random_crop(labels, 100)
 
 
-    crop = torch.tensor(crop)
-    lsds = lsd(crop, (5,) * 3, (1, 1, 4))
+    crop = torch.tensor(crop).to('cuda')
+
+    lsds = lsd(crop, (5,) * 3, (1, 1, 4)).cpu().numpy()
 
     fig, axes = plt.subplots(
                 1,
@@ -810,80 +299,5 @@ if __name__ == '__main__':
     plt.show()
 
 
-    lsds_native = get_local_shape_descriptors(
-        segmentation=crop.numpy(),
-        sigma=(5,) * 3,
-        voxel_size=(1, 1, 4))
-
-    print(f'EQUIVALENT?: {torch.allclose(lsds, torch.from_numpy(lsds_native))}')
-    #
-    fig, axes = plt.subplots(
-                1,
-                4,
-                figsize=(25, 10),
-                sharex=True,
-                sharey=True,
-                squeeze=False)
-
-    # lsds are shape: c,z,y,x (where channels is now 10 dimensions)
-    # first 3 components can be rendered as rgb, matplotlib expects channels last
-    axes[0][0].imshow(lsds[0:3,10].T)
-    axes[0][0].title.set_text('Mean offset')
-
-    axes[0][1].imshow(lsds[3:6,10].T)
-    axes[0][1].title.set_text('Covariance')
-
-    axes[0][2].imshow(lsds[6:9,10].T)
-    axes[0][2].title.set_text('Pearsons')
-
-    axes[0][3].imshow(lsds[9,10].T, cmap='jet')
-    axes[0][3].title.set_text('Size')
-    plt.show()
 
 
-    diff = lsds - torch.from_numpy(lsds_native)
-    print(diff.max())
-
-    #
-    def make_gaussian_kernel_1d(sigma):
-        """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
-        kernel_size = int(2 * round(sigma * 3.0) + 1)
-        ts = torch.linspace(-kernel_size // 2, kernel_size // 2 + 1, kernel_size)
-        gauss = torch.exp((-(ts / sigma) ** 2 / 2))
-        kernel = gauss / gauss.sum()
-
-        return kernel
-    #
-    #
-    # def __stacked_1d_gaussian(array: Tensor, sigma: Tuple[float, ...]) -> Tensor:
-    #     """ performs a 3d gaussian by repeated 1D bluring """
-    #     assert array.ndim == 3
-    #     assert len(sigma) == 3
-    #
-    #     array = array.reshape(1, 1, *array.shape)
-    #
-    #     # Separable 1D convolution
-    #     for i in range(3):
-    #
-    #         # 3d convolution need 5D tensor (B, C, X, Y, Z)
-    #         kernel: Tensor = make_gaussian_kernel_1d(sigma[i]).view(1, 1, -1, 1, 1)
-    #         pad: List[int] = tuple((k - 1) // 2 for k in kernel.shape[2::])
-    #
-    #         array = array.permute(0, 1, 4, 2, 3)
-    #         array = F.conv3d(array, kernel, stride=1, padding=pad)
-    #
-    #     return array
-    #
-
-    # def _compute_zero_padding(kernel_size: List[int]) -> Tuple[int, int, int]:
-    #     r"""Utility function that computes zero padding tuple.
-    #     Adapted from Kornia
-    #     """
-    #     computed: List[int] = [(k - 1) // 2 for k in kernel_size]
-    #     return computed[0], computed[1], computed[2]
-
-    # input = torch.rand((20, 100, 100))
-    # out = __stacked_1d_gaussian(input, (2, 2, 2))
-    # out2 = __aggregate_default(input, (2, 2, 2))
-    #
-    # print(out.sub(out2).abs().max())
