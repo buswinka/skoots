@@ -8,6 +8,7 @@ from typing import Tuple, List, Dict, Optional
 
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 
 from skoots.lib.morphology import gauss_filter
 
@@ -69,7 +70,7 @@ def get_local_shape_descriptors(
     )
 
 
-def __outer_prodcut(input_array: Tensor) -> Tensor:
+def __outer_product(input_array: Tensor) -> Tensor:
     """ computs the unique values of the outer products of the first dim (coord dim) for input """
     k = input_array.shape[0]
     outer = torch.einsum("i...,j...->ij...", input_array, input_array)
@@ -77,7 +78,9 @@ def __outer_prodcut(input_array: Tensor) -> Tensor:
     return outer.reshape((k ** 2,) + input_array.shape[1:])
 
 
-def __get_stats(coords: Tensor, mask: Tensor, sigma_voxel: Tuple[float, ...], sigma: Tuple[float, ...]):
+def __get_stats(coords: Tensor, mask: Tensor,
+                sigma_voxel: Tuple[float, ...],
+                sigma: Tuple[float, ...]) -> Tensor:
     """
 
 
@@ -88,30 +91,25 @@ def __get_stats(coords: Tensor, mask: Tensor, sigma_voxel: Tuple[float, ...], si
     :param components:
     :return:
     """
-    print(coords.shape, mask.shape)
     masked_coords = coords * mask
     count = __aggregate(mask, sigma_voxel)
 
     count_len = len(count.shape)  # should always be 3 right?
+
     count[count == 0] = 1
 
-    mean = torch.tensor([
-        __aggregate(masked_coords[d], sigma_voxel) for d in range(count_len)
-    ]).div(count)
-    
+    mean = [__aggregate(masked_coords[d], sigma_voxel).unsqueeze(0) for d in range(count_len)]
+    mean = torch.concatenate(mean, dim=0).div(count)
+
     mean_offset = mean - coords
 
     # covariance
-    coords_outer = __outer_prodcut(masked_coords)
+    coords_outer = __outer_product(masked_coords)
 
     entries = [0, 4, 8, 1, 2, 5]
-    covariance = torch.tensor([
-        __aggregate(coords_outer[d], sigma_voxel) for d in entries
-    ])
+    covariance = torch.concatenate([__aggregate(coords_outer[d], sigma_voxel).unsqueeze(0) for d in entries], dim=0)
 
-    covariance._div(count)._sub(
-        __outer_prodcut(mean)[entries]
-    ) # in place for memory
+    covariance.div_(count).sub_(__outer_product(mean)[entries])  # in place for memory
 
     variance = covariance[[0, 1, 2], ...]
 
@@ -120,18 +118,36 @@ def __get_stats(coords: Tensor, mask: Tensor, sigma_voxel: Tuple[float, ...], si
 
     # normalize Pearson correlation coefficient
     variance[variance < 1e-3] = 1e-3  # numerical stability
-    pearson[0] /= np.sqrt(variance[0, ...] * variance[1, ...])
-    pearson[1] /= np.sqrt(variance[0, ...] * variance[2, ...])
-    pearson[2] /= np.sqrt(variance[1, ...] * variance[2, ...])
+    pearson[0] /= torch.sqrt(variance[0, ...] * variance[1, ...])
+    pearson[1] /= torch.sqrt(variance[0, ...] * variance[2, ...])
+    pearson[2] /= torch.sqrt(variance[1, ...] * variance[2, ...])
 
     # normalize variances to interval [0, 1]
     variance[0] /= sigma[0] ** 2
     variance[1] /= sigma[1] ** 2
     variance[2] /= sigma[2] ** 2
 
-    return (mean_offset, variance, pearson, count[None, :])
+    return torch.concatenate((mean_offset, variance, pearson, count.unsqueeze(0)), dim=0)
 
-def __aggregate(input_array: Tensor, sigma: Tuple[float, ...]):
+
+# def __aggregate_torch_stacked1D(input_array: Tensor,  sigma: Tuple[float, ...]) -> Tensor:
+#     """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
+#
+#     # Separable 1D convolution
+#     vol_in = vol[None, None, ...]
+#     # k2d = torch.einsum('i,j->ij', k, k)
+#     # k2d = k2d / k2d.sum() # not necessary if kernel already sums to zero, check:
+#     # print(f'{k2d.sum()=}')
+#     k1d = k[None, None, :, None, None]
+#     for i in range(3):
+#         vol_in = vol_in.permute(0, 1, 4, 2, 3)
+#         vol_in = F.conv3d(vol_in, k1d, stride=1, padding=(len(k) // 2, 0, 0))
+#     vol_3d_sep = vol_in
+#     print((vol_3d - vol_3d_sep).abs().max())  # something ~1e-7
+#     print(torch.allclose(vol_3d, vol_3d_sep))  # allclose checks if it is around 1e-8
+
+
+def __aggregate_(input_array: Tensor, sigma: Tuple[float, ...]):
     """
     Basically just blurs. Different if doing with a sphere, but fuck it
 
@@ -139,15 +155,54 @@ def __aggregate(input_array: Tensor, sigma: Tuple[float, ...]):
     :param sigma:
     :return:
     """
-    """
-    from lsds
-    return gaussian_filter(
-                    array, sigma=sigma, mode="constant", cval=0.0, truncate=3.0
-                )[roi_slices]
 
+    _radius = tuple(round(3.0 * s) for s in sigma)
+    _kernel = tuple(2 * r + 1 for r in _radius)  # holy fuck with a large sigma this gets huge
+
+    return gauss_filter(input_array.unsqueeze(0).unsqueeze(0), kernel=_kernel, sigma=sigma).squeeze()
+
+
+def __aggregate_default(input_array: Tensor, sigma: Tuple[float, ...]):
     """
-    input_array._unsqueeze(0)._unsqueeze(0)
-    return gauss_filter(input_array, kernel=[3, 3, 3], sigma=sigma).squeeze()
+    Basically just blurs. Different if doing with a sphere, but fuck it
+
+    :param input_array: (X, Y, Z) tensor
+    :param sigma:
+    :return:
+    """
+
+    device = input_array.device
+    return torch.from_numpy(
+        gaussian_filter(input_array.cpu().numpy(), sigma=sigma, mode="constant", cval=0.0, truncate=3.0)).to(device)
+
+def make_gaussian_kernel_1d(sigma):
+    """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
+    kernel_size = int(2 * round(sigma * 3.0) + 1)
+    ts = torch.linspace(-kernel_size // 2, kernel_size // 2 + 1, kernel_size)
+    gauss = torch.exp((-(ts / sigma) ** 2 / 2))
+    kernel = gauss / gauss.sum()
+
+    return kernel
+
+def __aggregate(array: Tensor, sigma: Tuple[float, ...]) -> Tensor:
+
+    """ performs a 3d gaussian by repeated 1D bluring """
+    assert array.ndim == 3
+    assert len(sigma) == 3
+
+    array = array.reshape(1, 1, *array.shape)
+
+    # Separable 1D convolution
+    for i in range(3):
+
+        # 3d convolution need 5D tensor (B, C, X, Y, Z)
+        kernel: Tensor = make_gaussian_kernel_1d(sigma[i]).view(1, 1, -1, 1, 1)
+        pad: Tuple[int] = tuple(int((k - 1) // 2) for k in kernel.shape[2::])
+
+        array = array.permute(0, 1, 4, 2, 3)
+        array = F.conv3d(array, kernel, stride=1, padding=pad)
+
+    return array.squeeze(0).squeeze(0)
 
 
 def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tuple[int, int, int] | None = None):
@@ -177,37 +232,38 @@ def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tup
     sigma_voxel: Tuple[float, ...] = tuple(s / v for s, v in zip(sigma, voxel_size))
 
     grid = torch.meshgrid(
-        torch.arange(0, shape[0], 1, device=device),
-        torch.arange(0, shape[1], 1, device=device),
-        torch.arange(0, shape[2], 1, device=device),
+        torch.arange(0, shape[0] * voxel_size[0], voxel_size[0], device=device),
+        torch.arange(0, shape[1] * voxel_size[1], voxel_size[1], device=device),
+        torch.arange(0, shape[2] * voxel_size[2], voxel_size[2], device=device),
         indexing='ij')
-    grid = torch.tensor(grid, device=device)
-    print(grid.shape)
+    grid = [g.unsqueeze(0) for g in grid]
+    grid = torch.concatenate(grid, dim=0)
 
     for label in labels:
         if label == 0: continue
 
         mask = (segmentation == label).float()
-
         descriptor: Tensor = __get_stats(coords=grid, mask=mask, sigma_voxel=sigma_voxel, sigma=sigma)
-        descriptors._add(descriptor * mask)
+        descriptors.add_(descriptor * mask)
 
     max_distance = torch.tensor(sigma, dtype=torch.float, device=device)
 
     # correct descriptors for propper scaling
-    descriptors[[0, 1, 2], ...]._div(max_distance.view(3, 1, 1, 1) * 0.5 + 0.5)
-
+    # descriptors[[0, 1, 2], ...].div_(max_distance.view(3, 1, 1, 1)).mul_(0.5).add_(0.5)
+    descriptors[[0, 1, 2], ...] = (
+            descriptors[[0, 1, 2], ...] / max_distance[:, None, None, None] * 0.5
+            + 0.5
+    )
     # pearsons in [0, 1]
-    descriptors[[6,7,8], ...]._mul(0.5)._add(0.5)
+    # descriptors[[6, 7, 8], ...].mul_(0.5).add_(0.5)
+    descriptors[[6, 7, 8], ...] = descriptors[[6, 7, 8], ...] * 0.5 + 0.5
 
     # reset background to 0
-    descriptors[[0,1,2,6,7,8], ...]._mul(segmentation != 0)
+    descriptors[[0, 1, 2, 6, 7, 8], ...] *= segmentation != 0
 
     torch.clamp(descriptors, 0, 1, out=descriptors)
 
     return descriptors
-
-
 
 
 class LsdExtractor(object):
@@ -287,7 +343,6 @@ class LsdExtractor(object):
 
         # prepare full-res descriptor volumes for roi
         descriptors = np.zeros((channels,) + roi.get_shape(), dtype=np.float32)
-        print(f'{descriptors.shape=}')
         # get sub-sampled shape, roi, voxel size and sigma
         df = self.downsample
         logger.debug(
@@ -296,7 +351,6 @@ class LsdExtractor(object):
 
         sub_shape = tuple(s / df for s in segmentation.shape)
         sub_roi = roi / df
-        print(f'{sub_roi=}')
         assert sub_roi * df == roi, (
                 "Segmentation shape %s is not a multiple of downsampling factor "
                 "%d (sub_roi=%s, roi=%s)."
@@ -309,8 +363,6 @@ class LsdExtractor(object):
         logger.debug("Downsampled voxel size: %s", sub_voxel_size)
         logger.debug("Sigma in voxels: %s", sub_sigma_voxel)
 
-        print(f'{sub_voxel_size=}, {sub_sigma_voxel=}')
-        print(f'{sub_shape=}')
         # prepare coords volume (reuse if we already have one)
         if (sub_shape, sub_voxel_size) not in self.coords:
 
@@ -350,7 +402,6 @@ class LsdExtractor(object):
 
             try:
                 # 3d by default
-                print(df)
                 sub_mask = mask[::df, ::df, ::df]
 
             except:
@@ -358,8 +409,6 @@ class LsdExtractor(object):
 
             logger.debug("Downsampled label mask %s", sub_mask.shape)
 
-            print(
-                f'Input into __get_stats: {coords.shape}, {sub_mask.shape=}, {sub_sigma_voxel=}, {sub_roi=}, {components=}')
             sub_descriptor = np.concatenate(
                 self.__get_stats(coords, sub_mask, sub_sigma_voxel, sub_roi, components)
             )
@@ -385,7 +434,6 @@ class LsdExtractor(object):
             # farthest voxel in context is sigma away, but this is almost
             # impossible to reach as offset -- let's take half sigma
             max_distance = np.array([0.5 * s for s in self.sigma], dtype=np.float32)
-
         if dims == 3:
 
             # mean offsets (z,y,x) = [0,1,2]
@@ -461,13 +509,11 @@ class LsdExtractor(object):
 
         # clip outliers
         np.clip(descriptors, 0.0, 1.0, out=descriptors)
-        print(f'{descriptors.shape}')
         return descriptors
 
     def __get_stats(self, coords, mask, sigma_voxel, roi, components):
 
         # mask for object
-        print(f'IN __get_stats: {coords.shape}, {mask.shape=}')
         masked_coords = coords * mask
 
         # number of inside voxels
@@ -493,6 +539,7 @@ class LsdExtractor(object):
         )
 
         mean /= count
+
         logger.debug("%f seconds", time.time() - start)
 
         if components is not None:
@@ -507,8 +554,6 @@ class LsdExtractor(object):
             logger.debug("Computing offset of mean position...")
             start = time.time()
             mean_offset = mean - coords[(slice(None),) + roi.to_slices()]
-            print(f'{mean.shape=}, {coords.shape=}')
-            print(f'{mean_offset.shape=}, {mean_offset.max()=}, {mean_offset.min()=}')
 
         # covariance
         if components is None or calc_covariance:
@@ -639,7 +684,6 @@ class LsdExtractor(object):
                 array, sigma=sigma, mode="constant", cval=0.0, truncate=3.0
             )[roi_slices]
 
-
             return out
         elif mode == "sphere":
 
@@ -672,8 +716,6 @@ class LsdExtractor(object):
         """
         k = array.shape[0]
         outer = np.einsum("i...,j...->ij...", array, array)
-
-        print(f'__outer_product: {array.shape=}, {outer.shape=}')
         return outer.reshape((k ** 2,) + array.shape[1:])
 
     def __upsample(self, array, f):
@@ -737,14 +779,111 @@ if __name__ == '__main__':
         labels = labels[:, y:y + crop_size, x:x + crop_size]
         return labels
 
+
     crop = random_crop(labels, 100)
 
-    # lsds = get_local_shape_descriptors(
-    #     segmentation=random_crop(labels, 100),
-    #     sigma=(5,) * 3,
-    #     voxel_size=(1, 1, 4))
-    #
-    # labels.shape
-# def lsd(segmentation: Tensor, sigma: Tuple[float, float, float], voxel_size: Tuple[int, int, int] | None = None):
+
     crop = torch.tensor(crop)
-    torch_lsd = lsd(crop, (5,) * 3, (1,1,4))
+    lsds = lsd(crop, (5,) * 3, (1, 1, 4))
+
+    fig, axes = plt.subplots(
+                1,
+                4,
+                figsize=(25, 10),
+                sharex=True,
+                sharey=True,
+                squeeze=False)
+
+    # lsds are shape: c,z,y,x (where channels is now 10 dimensions)
+    # first 3 components can be rendered as rgb, matplotlib expects channels last
+    axes[0][0].imshow(lsds[0:3,10].T)
+    axes[0][0].title.set_text('Mean offset')
+
+    axes[0][1].imshow(lsds[3:6,10].T)
+    axes[0][1].title.set_text('Covariance')
+
+    axes[0][2].imshow(lsds[6:9,10].T)
+    axes[0][2].title.set_text('Pearsons')
+
+    axes[0][3].imshow(lsds[9,10].T, cmap='jet')
+    axes[0][3].title.set_text('Size')
+    plt.show()
+
+
+    lsds_native = get_local_shape_descriptors(
+        segmentation=crop.numpy(),
+        sigma=(5,) * 3,
+        voxel_size=(1, 1, 4))
+
+    print(f'EQUIVALENT?: {torch.allclose(lsds, torch.from_numpy(lsds_native))}')
+    #
+    fig, axes = plt.subplots(
+                1,
+                4,
+                figsize=(25, 10),
+                sharex=True,
+                sharey=True,
+                squeeze=False)
+
+    # lsds are shape: c,z,y,x (where channels is now 10 dimensions)
+    # first 3 components can be rendered as rgb, matplotlib expects channels last
+    axes[0][0].imshow(lsds[0:3,10].T)
+    axes[0][0].title.set_text('Mean offset')
+
+    axes[0][1].imshow(lsds[3:6,10].T)
+    axes[0][1].title.set_text('Covariance')
+
+    axes[0][2].imshow(lsds[6:9,10].T)
+    axes[0][2].title.set_text('Pearsons')
+
+    axes[0][3].imshow(lsds[9,10].T, cmap='jet')
+    axes[0][3].title.set_text('Size')
+    plt.show()
+
+
+    diff = lsds - torch.from_numpy(lsds_native)
+    print(diff.max())
+
+    #
+    def make_gaussian_kernel_1d(sigma):
+        """ ripped from https://stackoverflow.com/questions/67633879/implementing-a-3d-gaussian-blur-using-separable-2d-convolutions-in-pytorch """
+        kernel_size = int(2 * round(sigma * 3.0) + 1)
+        ts = torch.linspace(-kernel_size // 2, kernel_size // 2 + 1, kernel_size)
+        gauss = torch.exp((-(ts / sigma) ** 2 / 2))
+        kernel = gauss / gauss.sum()
+
+        return kernel
+    #
+    #
+    # def __stacked_1d_gaussian(array: Tensor, sigma: Tuple[float, ...]) -> Tensor:
+    #     """ performs a 3d gaussian by repeated 1D bluring """
+    #     assert array.ndim == 3
+    #     assert len(sigma) == 3
+    #
+    #     array = array.reshape(1, 1, *array.shape)
+    #
+    #     # Separable 1D convolution
+    #     for i in range(3):
+    #
+    #         # 3d convolution need 5D tensor (B, C, X, Y, Z)
+    #         kernel: Tensor = make_gaussian_kernel_1d(sigma[i]).view(1, 1, -1, 1, 1)
+    #         pad: List[int] = tuple((k - 1) // 2 for k in kernel.shape[2::])
+    #
+    #         array = array.permute(0, 1, 4, 2, 3)
+    #         array = F.conv3d(array, kernel, stride=1, padding=pad)
+    #
+    #     return array
+    #
+
+    # def _compute_zero_padding(kernel_size: List[int]) -> Tuple[int, int, int]:
+    #     r"""Utility function that computes zero padding tuple.
+    #     Adapted from Kornia
+    #     """
+    #     computed: List[int] = [(k - 1) // 2 for k in kernel_size]
+    #     return computed[0], computed[1], computed[2]
+
+    # input = torch.rand((20, 100, 100))
+    # out = __stacked_1d_gaussian(input, (2, 2, 2))
+    # out2 = __aggregate_default(input, (2, 2, 2))
+    #
+    # print(out.sub(out2).abs().max())
