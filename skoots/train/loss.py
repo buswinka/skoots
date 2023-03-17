@@ -78,7 +78,7 @@ class dice(nn.Module):
 
 
 class tversky(nn.Module):
-    def __init__(self, alpha, beta, eps, device: str = 'cpu'):
+    def __init__(self, alpha, beta, eps):
         """
         Returns dice index of two torch.Tensors
 
@@ -93,14 +93,16 @@ class tversky(nn.Module):
         """
         super(tversky, self).__init__()
 
-        self.alpha = torch.tensor(alpha, device=device)
-        self.beta = torch.tensor(beta, device=device)
-        self.eps = torch.tensor(eps, device=device)
+        self.alpha = torch.tensor(alpha)
+        self.beta = torch.tensor(beta)
+        self.eps = torch.tensor(eps)
 
     def forward(self, predicted: Union[Tensor, List[Tensor]], ground_truth: Tensor) -> Tensor:
-        # assert isinstance(ground_truth, Tensor)
-        # assert ground_truth.shape[0] == len(
-        #     predicted), f'Batch sizes are note the same!, {len(predicted)}, {ground_truth.shape}'
+
+        if self.alpha.device != predicted.device:  # silently caches device
+            self.alpha.to(predicted.device)
+            self.beta.to(predicted.device)
+            self.eps.to(predicted.device)
 
         futures: List[torch.jit.Future[torch.Tensor]] = []
 

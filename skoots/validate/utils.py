@@ -3,6 +3,11 @@ from torch import Tensor
 import skimage.io as io
 import numpy as np
 from typing import Optional
+from torch import nn
+from yacs.config import CfgNode
+
+import bism.models
+import bism.modules
 
 
 def imread(image_path: str,
@@ -26,3 +31,11 @@ def imread(image_path: str,
         image: Tensor = image.pin_memory()
 
     return image
+
+
+
+if __name__ == '__main__':
+    from skoots.config import get_cfg_defaults
+
+    cfg = get_cfg_defaults()
+    cfg_to_bism_model(cfg)
