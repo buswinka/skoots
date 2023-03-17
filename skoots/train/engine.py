@@ -107,9 +107,13 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
 
     merged_validation = MultiDataset(*_datasets)
     test_sampler = torch.utils.data.distributed.DistributedSampler(merged_validation)
-    valdiation_dataloader = DataLoader(merged_validation, num_workers=0, batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
-                                       sampler=test_sampler,
-                                       collate_fn=skeleton_colate)
+    if _datasets or cfg.TRAIN.VALIDATION_BATCH_SIZE >= 1:
+        valdiation_dataloader = DataLoader(merged_validation, num_workers=0, batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
+                                           sampler=test_sampler,
+                                           collate_fn=skeleton_colate)
+
+    else:  # we might not want to run validation...
+        valdiation_dataloader = None
 
     torch.backends.cudnn.benchmark = cfg.TRAIN.CUDNN_BENCHMARK
     torch.autograd.profiler.profile = cfg.TRAIN.AUTOGRAD_PROFILE
@@ -130,7 +134,7 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
     optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](model.parameters(),
                                                        lr=cfg.TRAIN.LEARNING_RATE,
                                                        weight_decay=cfg.TRAIN.WEIGHT_DECAY)
-    scheduler = _valid_lr_schedulers[cfg.TRAIN.SCHEDULER](optimizer)
+    scheduler = _valid_lr_schedulers[cfg.TRAIN.SCHEDULER](optimizer, T_0=cfg.TRAIN.SCHEDULER_T0)
     scaler = GradScaler(enabled=cfg.TRAIN.MIXED_PRECISION)
 
     swa_model = torch.optim.swa_utils.AveragedModel(model)
@@ -141,21 +145,21 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
     loss_embed: Callable = _valid_loss_functions[cfg.TRAIN.LOSS_EMBED](**_kwarg)
 
     _kwarg = {k:v for k,v in zip(cfg.TRAIN.LOSS_PROBABILITY_KEYWORDS, cfg.TRAIN.LOSS_PROBABILITY_VALUES)}
-    loss_prob: Callable = _valid_loss_functions[cfg.TRAIN.LOSS_PROBABILITY](**cfg.TRAIN.LOSS_PROBABILITY_KWARGS)
+    loss_prob: Callable = _valid_loss_functions[cfg.TRAIN.LOSS_PROBABILITY](**_kwarg)
 
     _kwarg = {k:v for k,v in zip(cfg.TRAIN.LOSS_SKELETON_KEYWORDS, cfg.TRAIN.LOSS_SKELETON_VALUES)}
-    loss_skele: Callable = _valid_loss_functions[cfg.TRAIN.LOSS_SKELETON](**cfg.TRAIN.LOSS_SKELETON_KWARGS)
+    loss_skele: Callable = _valid_loss_functions[cfg.TRAIN.LOSS_SKELETON](**_kwarg)
 
     # Save each loss value in a list...
-    avg_epoch_loss = []
-    avg_epoch_embed_loss = []
-    avg_epoch_prob_loss = []
-    avg_epoch_skele_loss = []
+    avg_epoch_loss = [9999999999.9999999999]
+    avg_epoch_embed_loss = [9999999999.9999999999]
+    avg_epoch_prob_loss = [9999999999.9999999999]
+    avg_epoch_skele_loss = [9999999999.9999999999]
 
-    avg_val_loss = []
-    avg_val_embed_loss = []
-    avg_val_prob_loss = []
-    avg_val_skele_loss = []
+    avg_val_loss = [9999999999.9999999999]
+    avg_val_embed_loss = [9999999999.9999999999]
+    avg_val_prob_loss = [9999999999.9999999999]
+    avg_val_skele_loss = [9999999999.9999999999]
 
     # skel_crossover_loss = skoots.train.loss.split(n_iter=3, alpha=2)
 

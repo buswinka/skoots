@@ -33,20 +33,20 @@ _C.MODEL.NORMALIZATION='layernorm'
 # Training Configurations
 _C.TRAIN = CN()
 _C.TRAIN.DISTRIBUTED = True
-_C.TRAIN.PRETRAINED_MODEL_PATH = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct20_11-54-51_CHRISUBUNTU.trch'
+_C.TRAIN.PRETRAINED_MODEL_PATH = ['/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct20_11-54-51_CHRISUBUNTU.trch']
 
 # Loss function and their constructor keyowrds
 _C.TRAIN.LOSS_EMBED = 'tversky'
 _C.TRAIN.LOSS_EMBED_KEYWORDS = ['alpha', 'beta', 'eps']
-_C.TRAIN.LOSS_EMBED_VALS = [0.25, 0.75, 1e-8]
+_C.TRAIN.LOSS_EMBED_VALUES = [0.25, 0.75, 1e-8]
 
 _C.TRAIN.LOSS_PROBABILITY = 'tversky'
 _C.TRAIN.LOSS_PROBABILITY_KEYWORDS = ['alpha', 'beta', 'eps']
-_C.TRAIN.LOSS_PROBABILITY_VALS = [0.5, 0.5, 1e-8]
+_C.TRAIN.LOSS_PROBABILITY_VALUES = [0.5, 0.5, 1e-8]
 
 _C.TRAIN.LOSS_SKELETON = 'tversky'
 _C.TRAIN.LOSS_SKELETON_KEYWORDS = ['alpha', 'beta', 'eps']
-_C.TRAIN.LOSS_SKELETON_VALS = [0.5, 1.5, 1e-8]
+_C.TRAIN.LOSS_SKELETON_VALUES = [0.5, 1.5, 1e-8]
 
 # We sum the loss values of each part together, scaled by some factor set here
 _C.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT = 1.0
@@ -61,10 +61,10 @@ _C.TRAIN.LOSS_SKELETON_START_EPOCH = 10
 
 _C.TRAIN.TRAIN_DATA_DIR = ['/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/train']
 _C.TRAIN.TRAIN_SAMPLE_PER_IMAGE = [32]
-_C.TRAIN.TRAIN_BATCH_SIZE = [2]
+_C.TRAIN.TRAIN_BATCH_SIZE = 2
 _C.TRAIN.VALIDATION_DATA_DIR = ['/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/unscaled/validate']
 _C.TRAIN.VALIDATION_SAMPLE_PER_IMAGE = [6]
-_C.TRAIN.VALIDATION_BATCH_SIZE = [1]
+_C.TRAIN.VALIDATION_BATCH_SIZE = 1
 _C.TRAIN.BACKGROUND_DATA_DIR = ['/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/background']
 _C.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE = [8]
 _C.TRAIN.STORE_DATA_ON_GPU = False

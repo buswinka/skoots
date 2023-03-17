@@ -23,7 +23,7 @@ from functools import partial
 torch.set_float32_matmul_precision('high')
 
 
-def load_cfg(args: argparse.Namespace):
+def load_cfg_from_file(args: argparse.Namespace):
     """Load configurations.
     """
     # Set configurations
@@ -31,7 +31,7 @@ def load_cfg(args: argparse.Namespace):
     if os.path.exists(args.config_file):
         cfg.merge_from_file(args.config_file)
     else:
-        warnings.warn('Could not find config file from path, training using default configuration')
+        raise ValueError('Could not find config file from path!')
     cfg.freeze()
 
     return cfg
@@ -42,14 +42,14 @@ def main():
     parser.add_argument('--config-file', type=str, help='YAML config file for training')
     args = parser.parse_args()
 
-    cfg = load_cfg(args)
+    cfg = load_cfg_from_file(args)
     model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
 
-    checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH)
-    state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
-    model.load_state_dict(state_dict)
+    if cfg.TRAIN.PRETRAINED_MODEL_PATH:
+        checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH[0])
+        state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
+        model.load_state_dict(state_dict)
 
-    cfg, model = main()
     port = find_free_port()
     world_size = cfg.SYSTEM.NUM_GPUS if cfg.TRAIN.DISTRIBUTED else 1
 
