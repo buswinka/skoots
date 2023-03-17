@@ -12,5 +12,9 @@ setuptools.setup(
     install_requires=[
         'torch>=1.12.0',
         'torchvision>=0.13.0',
-    ]
+        'bism'
+    ],
+    entry_points={
+        'console_scripts': ['skoots-train = skoots.train.__main__:main']
+    }
 )
