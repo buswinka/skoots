@@ -50,6 +50,7 @@ def main():
         state_dict = checkpoint if not 'model_state_dict' in checkpoint else checkpoint['model_state_dict']
         model.load_state_dict(state_dict)
 
+
     port = find_free_port()
     world_size = cfg.SYSTEM.NUM_GPUS if cfg.TRAIN.DISTRIBUTED else 1
 

@@ -59,14 +59,22 @@ _valid_lr_schedulers = {
 }
 
 torch.manual_seed(101196)
+torch.set_float32_matmul_precision('high')
 
-
-def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode):
+def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: CfgNode):
     setup_process(rank, world_size, port, backend='nccl')
     device = f'cuda:{rank}'
 
-    model = model.to(device)
-    model = torch.nn.parallel.DistributedDataParallel(model)
+    base_model = base_model.to(device)
+    base_model = torch.nn.parallel.DistributedDataParallel(base_model)
+
+    if int(torch.__version__[0]) >= 2:
+        print('Comiled with Inductor')
+        model = torch.compile(base_model)
+    else:
+        model = torch.jit.script(base_model)
+
+
 
     augmentations: Callable[[Dict[str, Tensor]], Dict[str, Tensor]] = partial(transform_from_cfg, cfg=cfg,
                                                                               device=device)
@@ -82,10 +90,10 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
                                  device=device,
                                  pad_size=10).to(_device))
 
-    for path, N in zip(cfg.TRAIN.TRAIN_DATA_DIR, cfg.TRAIN.TRAIN_SAMPLE_PER_IMAGE):
+    for path, N in zip(cfg.TRAIN.BACKGROUND_DATA_DIR, cfg.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE):
         _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else 'cpu'
         _datasets.append(dataset(path=path,
-                                 transforms=partial(background_agumentations, device=device), sample_per_image=N,
+                                 transforms=background_agumentations, sample_per_image=N,
                                  device=device,
                                  pad_size=100).to(_device))
 
@@ -98,7 +106,7 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
     # Validation Dataset
     _datasets = []
     for path, N in zip(cfg.TRAIN.VALIDATION_DATA_DIR, cfg.TRAIN.VALIDATION_SAMPLE_PER_IMAGE):
-        _device = device if cfg.TRAIN.STRORE_DATA_ON_GPU else 'cpu'
+        _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else 'cpu'
         _datasets.append(dataset(path=path,
                                  transforms=augmentations,
                                  sample_per_image=N,
@@ -281,7 +289,7 @@ def train(rank: str, port: str, world_size: int, model: nn.Module, cfg: CfgNode)
             for images, masks, skeleton, skele_masks, baked in valdiation_dataloader:
                 with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
                     with torch.no_grad():
-                        out: Tensor = swa_model(images)
+                        out: Tensor = model(images)
 
                         probability_map: Tensor = out[:, [-1], ...]
                         predicted_skeleton: Tensor = out[:, [-2], ...]
