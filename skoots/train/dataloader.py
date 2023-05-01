@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 # from skoots.train.merged_transform import get_centroids
 from tqdm import tqdm
 from typing import Tuple, Callable, List, Union, Optional
+import copy
 
 Transform = Callable[[Dict[str, Tensor]], Dict[str, Tensor]]
 
@@ -217,9 +218,9 @@ class BackgroundDataset(Dataset):
 
         for k in data_dict:
             if isinstance(data_dict[k], torch.Tensor):
-                data_dict[k] = data_dict[k].to(self.device)
+                data_dict[k] = data_dict[k].to(self.device, non_blocking=True)
             elif isinstance(data_dict[k], dict):
-                data_dict[k] = {key: value.to(self.device) for (key, value) in data_dict[k].items()}
+                data_dict[k] = {key: value.to(self.device, non_blocking=True) for (key, value) in data_dict[k].items()}
 
         return data_dict
 

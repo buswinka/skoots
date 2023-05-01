@@ -7,7 +7,7 @@ import skimage.io as io
 from typing import List, Tuple, Dict, Optional
 import glob
 
-from skoots.lib.morphology import gauss_filter, binary_dilation, _compute_zero_padding, _get_binary_kernel3d
+from skoots.lib.morphology import gauss_filter, binary_dilation, binary_dilation_2d, _compute_zero_padding, _get_binary_kernel3d
 from skoots.train.generate_skeletons import calculate_skeletons, save_train_test_split
 import numpy as np
 
@@ -147,7 +147,7 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor],
     skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
 
     for _ in range(n):  # this might make things a bit better on the skeleton side of things...
-        skeleton_mask = gauss_filter(binary_dilation(skeleton_mask.gt(0.5).float()), kernel_size, [0.8, 0.8, 0.8])
+        skeleton_mask = gauss_filter(binary_dilation_2d(skeleton_mask.gt(0.5).float()), kernel_size, [0.8, 0.8, 0.8])
 
     return skeleton_mask.squeeze(0)
 

@@ -6,7 +6,8 @@ from numbers import Number
 import numpy as np
 
 from yacs.config import CfgNode
-import bism.models
+import bism.backends
+from bism.models.spatial_embedding import SpatialEmbedding
 import bism.modules
 from bism.models.spatial_embedding import SpatialEmbedding
 from functools import partial
@@ -16,8 +17,8 @@ def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
     """ utility function to get a bism model from cfg """
 
     _valid_model_constructors = {
-        'bism_unext': bism.models.unext.UNeXT_3D,
-        'bism_unet': bism.models.unet.UNet_3D
+        'bism_unext': bism.backends.unext.UNeXT_3D,
+        'bism_unet': bism.backends.unet.UNet_3D
     }
 
     _valid_model_blocks = {

@@ -1,8 +1,10 @@
 import numpy as np
+import skoots.train.loss
 import torch
 from torch import Tensor
 import torchvision
 from skoots.validate.utils import imread
+from skoots.train.loss import soft_cldice
 from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -195,6 +197,84 @@ def mask_iou(gt: Tensor, pred: Tensor):
     return iou
 
 
+def mask_dice(gt: Tensor, pred: Tensor):
+    """
+    Calculates the Dice Index of each object on a per-mask-basis.
+
+    :param gt: mask 1 with N instances
+    :param pred: mask 2 with M instances
+    :return: NxM matrix of IoU's
+    """
+    assert gt.shape == pred.shape, 'Input tensors must be the same shape'
+    assert gt.device == pred.device, 'Input tensors must be on the same device'
+
+    a_unique = gt.unique()
+    a_unique = a_unique[a_unique > 0]
+
+    b_unique = pred.unique()
+    b_unique = b_unique[b_unique > 0]
+
+    dice = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+
+    for i, au in tqdm(enumerate(a_unique), total = len(a_unique)):
+        _a = gt == au
+        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = touching[touching != 0]
+
+        for j, bu in enumerate(b_unique):
+            if torch.any(touching == bu):
+                _b = pred == bu
+
+                numerator = torch.logical_and(_a, _b).sum() * 2
+                denominator = _a.sum()+_b.sum()
+
+                assert numerator < denominator, f'{numerator=}, {denominator=}, {_a.sum()=}, {_b.sum()=}, {(_a*_b).sum()=}'
+
+                dice[i, j] = numerator/denominator
+            else:
+                dice[i, j] = 0.0
+
+    return dice
+
+
+
+def mask_soft_cldice(gt: Tensor, pred: Tensor):
+    """
+    Calculates the Dice Index of each object on a per-mask-basis.
+
+    :param gt: mask 1 with N instances
+    :param pred: mask 2 with M instances
+    :return: NxM matrix of IoU's
+    """
+    assert gt.shape == pred.shape, 'Input tensors must be the same shape'
+    assert gt.device == pred.device, 'Input tensors must be on the same device'
+
+    a_unique = gt.unique()
+    a_unique = a_unique[a_unique > 0]
+
+    b_unique = pred.unique()
+    b_unique = b_unique[b_unique > 0]
+
+    criterion = torch.compile(skoots.train.loss.soft_cldice())
+    cldice = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+
+    for i, au in tqdm(enumerate(a_unique), total = len(a_unique)):
+        _a = gt == au
+        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = touching[touching != 0]
+
+        for j, bu in enumerate(b_unique):
+            if torch.any(touching == bu):
+                _b = pred == bu
+                cldice[i, j] = criterion(_b.float(), _a.float())
+            else:
+                cldice[i, j] = 0.0
+
+    return cldice
+
+
+
+
 def sparse_mask_iou(a: Tensor, b: Tensor) -> Tensor:
     """
     Calculates the IoU of each object on a per-mask-basis using sparse tensors.
@@ -291,7 +371,6 @@ def get_segmentation_errors(ground_truth: Tensor, predicted: Tensor) -> float:
             num_split += 1
 
     over_segmentation_rate = num_split / len(iou)
-    print(num_split, len(iou), over_segmentation_rate)
 
     iou = _iou_instance_dict(predicted, ground_truth)
     for k, v in iou.items():

@@ -15,6 +15,8 @@ setuptools.setup(
         'bism'
     ],
     entry_points={
-        'console_scripts': ['skoots-train = skoots.train.__main__:main']
+        'console_scripts': ['skoots-train = skoots.train.__main__:main',
+                            'skoots = skoots.__main__:main',
+                            'skoots-validate = skoots.validate.__main__:main']
     }
 )

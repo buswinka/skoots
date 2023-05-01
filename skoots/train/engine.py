@@ -1,43 +1,32 @@
 import warnings
 from functools import partial
-from typing import Tuple, Callable, Dict
+from typing import List, Tuple, Callable, Union, OrderedDict, Optional, Dict
 import os.path
 import os
 
+import skoots.train.loss
 from skoots.train.dataloader import dataset, MultiDataset, skeleton_colate
 from skoots.train.sigma import Sigma, init_sigma
 from skoots.train.merged_transform import transform_from_cfg, background_transform_from_cfg
 from skoots.train.setup import setup_process, cleanup, find_free_port
-
-import torch.optim.lr_scheduler
-import torch.multiprocessing as mp
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-
-from lion_pytorch import Lion
-
-from yacs.config import CfgNode
-import skoots.train.loss
-from skoots.train.sigma import Sigma
+from skoots.train.utils import mask_overlay, write_progress
 from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.lib.embedding_to_prob import baked_embed_to_prob
 
-from skoots.train.utils import mask_overlay, write_progress
-
-from typing import List, Tuple, Callable, Union, OrderedDict, Optional
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torchvision.models.detection import FasterRCNN
-
-from torch.optim import Optimizer
+import torch.optim.lr_scheduler
 from torch.utils.data import DataLoader, Dataset
-from tqdm import trange
+from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import GradScaler, autocast
-from statistics import mean
-from torchvision.utils import flow_to_image, draw_keypoints, make_grid
-import matplotlib.pyplot as plt
 import torch.optim.swa_utils
+
+from lion_pytorch import Lion
+
+from tqdm import trange
+from statistics import mean
+from yacs.config import CfgNode
 
 Dataset = Union[Dataset, DataLoader]
 
@@ -68,12 +57,14 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
     base_model = base_model.to(device)
     base_model = torch.nn.parallel.DistributedDataParallel(base_model)
 
+    if int(rank) == 0:
+        print(cfg)
+
     if int(torch.__version__[0]) >= 2:
         print('Comiled with Inductor')
         model = torch.compile(base_model)
     else:
         model = torch.jit.script(base_model)
-
 
 
     augmentations: Callable[[Dict[str, Tensor]], Dict[str, Tensor]] = partial(transform_from_cfg, cfg=cfg,
@@ -88,19 +79,20 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
                                  transforms=augmentations,
                                  sample_per_image=N,
                                  device=device,
-                                 pad_size=10).to(_device))
+                                 pad_size=10).pin_memory().to(_device))
 
     for path, N in zip(cfg.TRAIN.BACKGROUND_DATA_DIR, cfg.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE):
         _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else 'cpu'
         _datasets.append(dataset(path=path,
                                  transforms=background_agumentations, sample_per_image=N,
                                  device=device,
-                                 pad_size=100).to(_device))
+                                 pad_size=100).pin_memory().to(_device))
 
     merged_train = MultiDataset(*_datasets)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(merged_train)
-    dataloader = DataLoader(merged_train, num_workers=0, batch_size=cfg.TRAIN.TRAIN_BATCH_SIZE,
+    _n_workers = 0 #if _device != 'cpu' else 2
+    dataloader = DataLoader(merged_train, num_workers=_n_workers, batch_size=cfg.TRAIN.TRAIN_BATCH_SIZE,
                             sampler=train_sampler, collate_fn=skeleton_colate)
 
     # Validation Dataset
@@ -111,12 +103,13 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
                                  transforms=augmentations,
                                  sample_per_image=N,
                                  device=device,
-                                 pad_size=10).to(_device))
+                                 pad_size=10).pin_memory().to(_device))
 
     merged_validation = MultiDataset(*_datasets)
     test_sampler = torch.utils.data.distributed.DistributedSampler(merged_validation)
     if _datasets or cfg.TRAIN.VALIDATION_BATCH_SIZE >= 1:
-        valdiation_dataloader = DataLoader(merged_validation, num_workers=0, batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
+        _n_workers = 0 #if _device != 'cpu' else 2
+        valdiation_dataloader = DataLoader(merged_validation, num_workers=_n_workers, batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
                                            sampler=test_sampler,
                                            collate_fn=skeleton_colate)
 

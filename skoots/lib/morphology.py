@@ -31,6 +31,25 @@ def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
     return kernel[ind[:, 0], ...]
 
 
+@torch.jit.script
+def _get_binary_kernel2d(window_size: int, device: str) -> Tensor:
+    r"""Creates a symmetric binary kernel to extract the patches. If the window size
+    is HxWxD will create a (H*W)xHxW kernel.
+
+    Adapted from a 2D Kornia implementation
+
+    """
+    window_range: int = int(window_size ** 3)
+    kernel: Tensor = torch.zeros((window_range, window_range, 1), device=device)
+    for i in range(window_range):
+        kernel[i, i, 0] += 1.0
+    kernel = kernel.view(-1, 1, window_size, window_size, 1)
+
+    # get rid of all zero kernels
+    ind = torch.nonzero(kernel.view(kernel.shape[0], -1).sum(1))
+    return kernel[ind[:, 0], ...]
+
+
 # re-implemented from torchvision.tensor.functional
 def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
     ksize_half = (kernel_size - 1) * 0.5
@@ -104,6 +123,7 @@ def binary_erosion(image: Tensor) -> Tensor:
     return features.min(dim=1)[0].unsqueeze(0)
 
 
+
 @torch.jit.script
 def binary_dilation(image: Tensor) -> Tensor:
     """
@@ -123,6 +143,28 @@ def binary_dilation(image: Tensor) -> Tensor:
     # map the local window to single vector
     features = F.conv3d(image.reshape(b * c, 1, h, w, d), kernel,
                         padding=padding, stride=1)
+    return torch.max(features.view(b, c, -1, h, w, d), dim=2)[0]
+
+@torch.jit.ignore
+def binary_dilation_2d(image: Tensor) -> Tensor:
+    """
+    Performs binary dilation on a 5D Tensor.
+
+    Shapes:
+        - input: :math:`(B, C, X, Y, Z)`
+        - output: :math:`(C, C, X, Y, Z)`
+
+    :param image: binary image
+    :return: dilated image
+    """
+    padding: Tuple[int, int, int] = _compute_zero_padding((3, 3, 1))
+    kernel: Tensor = _get_binary_kernel2d(3, str(image.device))
+
+    b, c, h, w, d = image.shape
+    # map the local window to single vector
+    features = F.conv3d(image.reshape(b * c, 1, h, w, d), kernel,
+                        padding=padding, stride=1)
+
     return torch.max(features.view(b, c, -1, h, w, d), dim=2)[0]
 
 def median_filter(input: Tensor) -> Tensor:

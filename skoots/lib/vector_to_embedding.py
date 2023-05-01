@@ -103,6 +103,8 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
 
     vector = vector.mul(num.view(newshape))
 
+    mesh = mesh + vector
+
     for _ in range(n - 1):  # Only executes if n > 1
         # convert to index.
         index = mesh.round()
@@ -117,7 +119,7 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
         for i in range(c):
             mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
 
-    return mesh + vector
+    return mesh
 
 def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
     """

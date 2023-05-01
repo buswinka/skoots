@@ -314,7 +314,7 @@ def transform_from_cfg(data_dict: Dict[str, Tensor],
     data_dict['baked-skeleton']: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
-    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z), kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE, n=1)
+    data_dict['skele_masks']: Tensor = skeleton_to_mask(skeletons, (x, y, z), kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE, n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE)
 
     return data_dict
 
