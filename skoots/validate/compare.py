@@ -1,8 +1,9 @@
-import torch
-from torch import Tensor
-from hcat.validate.stats import get_volume, get_surface_area, tversky
+from typing import Dict
 
-from typing import Dict, List, Union, Optional
+import torch
+from hcat.validate.stats import get_volume, get_surface_area
+from torch import Tensor
+
 
 def stats_per_instance(x: Tensor, anisotropy: Tensor) -> Dict[str, Tensor]:
     """
@@ -15,14 +16,14 @@ def stats_per_instance(x: Tensor, anisotropy: Tensor) -> Dict[str, Tensor]:
 
     object_id = torch.unique(x)
     object_id = object_id[object_id > 0]
-    summary['id'] = object_id
+    summary["id"] = object_id
 
-    summary['volume'] = torch.empty_like(object_id)
-    summary['surface_area'] = torch.empty_like(object_id)
+    summary["volume"] = torch.empty_like(object_id)
+    summary["surface_area"] = torch.empty_like(object_id)
 
     for i, id in enumerate(object_id):
-        summary['volume'][i] = get_volume(x.eq(id), anisotropy)
-        summary['surface_area'][i] = get_surface_area(x.eq(id), anisotropy)
+        summary["volume"][i] = get_volume(x.eq(id), anisotropy)
+        summary["surface_area"][i] = get_surface_area(x.eq(id), anisotropy)
 
     return summary
 

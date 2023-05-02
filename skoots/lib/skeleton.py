@@ -1,17 +1,15 @@
+from typing import List, Tuple, Dict
+
 import torch
-from torch import Tensor
 import torch.nn.functional as F
-from torchvision.transforms.functional import gaussian_blur
-import skimage.io as io
+from torch import Tensor
 
-from typing import List, Tuple, Dict, Optional
-import glob
-
-from skoots.lib.morphology import gauss_filter, binary_dilation, binary_dilation_2d, _compute_zero_padding, _get_binary_kernel3d
-from skoots.train.generate_skeletons import calculate_skeletons, save_train_test_split
-import numpy as np
-
-import os.path
+from skoots.lib.morphology import (
+    gauss_filter,
+    binary_dilation_2d,
+    _compute_zero_padding,
+    _get_binary_kernel3d,
+)
 
 
 @torch.jit.script
@@ -28,30 +26,36 @@ def average_baked_skeletons(baked_skeleton: Tensor, kernel_size: int = 3) -> Ten
     :param kernel_size: Kernel size for smoothing
     :return: smoothed skeleton: Smoothed Tensor
     """
-    padding: Tuple[int, int, int] = _compute_zero_padding((kernel_size, kernel_size, kernel_size))
+    padding: Tuple[int, int, int] = _compute_zero_padding(
+        (kernel_size, kernel_size, kernel_size)
+    )
     kernel: Tensor = _get_binary_kernel3d(kernel_size, str(baked_skeleton.device))
     b, c, h, w, d = baked_skeleton.shape
 
     # map the local window to single vector
-    features: Tensor = F.conv3d(baked_skeleton.reshape(b * c, 1, h, w, d), kernel,
-                                padding=padding, stride=1)
+    features: Tensor = F.conv3d(
+        baked_skeleton.reshape(b * c, 1, h, w, d), kernel, padding=padding, stride=1
+    )
     features: Tensor = features.view(b, c, -1, h, w, d)  # B, C, -1, X, Y, Z
 
     nonzero = features.gt(0).sum(2)  # B, C, X, Y, Z
-    nonzero[nonzero.eq(0)] = 1.
-    features = features.sum(2)  # This is the average of the kernel window... without zeros
+    nonzero[nonzero.eq(0)] = 1.0
+    features = features.sum(
+        2
+    )  # This is the average of the kernel window... without zeros
     features = features / nonzero
 
     return features
 
 
 @torch.jit.ignore
-def bake_skeleton(masks: Tensor,
-                  skeletons: Dict[int, Tensor],
-                  anisotropy: List[float] = (1., 1., 1.),
-                  average: bool = True,
-                  device: str = 'cpu'
-                  ) -> Tensor:
+def bake_skeleton(
+    masks: Tensor,
+    skeletons: Dict[int, Tensor],
+    anisotropy: List[float] = (1.0, 1.0, 1.0),
+    average: bool = True,
+    device: str = "cpu",
+) -> Tensor:
     """
     For each pixel :math:`p_ik` of object :math:`k` at index :math:`i\in[x,y,z]` in masks, returns a baked skeleton
     where the value at each index is the closest skeleton point :math:`s_{jk}` of any instance :math:`k`.
@@ -83,9 +87,11 @@ def bake_skeleton(masks: Tensor,
     :return: Baked skeleton
     """
 
-    baked = torch.zeros((3, masks.shape[1], masks.shape[2], masks.shape[3]), device=device)
+    baked = torch.zeros(
+        (3, masks.shape[1], masks.shape[2], masks.shape[3]), device=device
+    )
 
-    assert baked.device == masks.device, 'Masks device must equal kwarg device'
+    assert baked.device == masks.device, "Masks device must equal kwarg device"
 
     unique = torch.unique(masks)
 
@@ -98,25 +104,31 @@ def bake_skeleton(masks: Tensor,
         # Calculate the distance between the skeleton of object 'id'
         # and all nonzero pixels of the binary mask of instance 'id'
         # print(skel.shape, nonzero.shape, id)
-        ind: Tensor = torch.cdist(x1=skel.mul(anisotropy),
-                                  x2=nonzero.mul(anisotropy)
-                                  ).squeeze(0).argmin(dim=0)
+        ind: Tensor = (
+            torch.cdist(x1=skel.mul(anisotropy), x2=nonzero.mul(anisotropy))
+            .squeeze(0)
+            .argmin(dim=0)
+        )
 
         nonzero = nonzero.squeeze(0).long()  # Can only index with long dtype
 
-        baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = skel[0, ind, :].float().T
+        baked[:, nonzero[:, 0], nonzero[:, 1], nonzero[:, 2]] = (
+            skel[0, ind, :].float().T
+        )
         del ind
 
     baked = average_baked_skeletons(baked.unsqueeze(0)).squeeze(0) if average else baked
-    baked[baked==0] = -100 # otherwise 0,0,0 is positive... weird...
+    baked[baked == 0] = -100  # otherwise 0,0,0 is positive... weird...
 
     return baked
 
 
-def skeleton_to_mask(skeletons: Dict[int, Tensor],
-                     shape: Tuple[int, int, int],
-                     kernel_size: Tuple[int, int, int] = (15,15,1),
-                     n: int = 2) -> Tensor:
+def skeleton_to_mask(
+    skeletons: Dict[int, Tensor],
+    shape: Tuple[int, int, int],
+    kernel_size: Tuple[int, int, int] = (15, 15, 1),
+    n: int = 2,
+) -> Tensor:
     """
     Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or whatever...
 
@@ -140,14 +152,22 @@ def skeleton_to_mask(skeletons: Dict[int, Tensor],
         ind_y = torch.logical_and(y >= 0, y < shape[1])
         ind_z = torch.logical_and(z >= 0, z < shape[2])
 
-        ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3  # Equivalent to a 3 way logical and
+        ind = (
+            ind_x.float() + ind_y.float() + ind_z.float()
+        ) == 3  # Equivalent to a 3 way logical and
 
         skeleton_mask[x[ind], y[ind], z[ind]] = 1
 
     skeleton_mask = skeleton_mask.unsqueeze(0).unsqueeze(0)
 
-    for _ in range(n):  # this might make things a bit better on the skeleton side of things...
-        skeleton_mask = gauss_filter(binary_dilation_2d(skeleton_mask.gt(0.5).float()), kernel_size, [0.8, 0.8, 0.8])
+    for _ in range(
+        n
+    ):  # this might make things a bit better on the skeleton side of things...
+        skeleton_mask = gauss_filter(
+            binary_dilation_2d(skeleton_mask.gt(0.5).float()),
+            kernel_size,
+            [0.8, 0.8, 0.8],
+        )
 
     return skeleton_mask.squeeze(0)
 
@@ -165,34 +185,43 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
     :param embed: Embedding
     :return: torch.int instance mask
     """
-    assert embed.device == skeleton.device, 'embed and skeleton must be on same device'
+    assert embed.device == skeleton.device, "embed and skeleton must be on same device"
     # assert embed.shape[2::] == skeleton.shape[2::], 'embed and skeleton must have identical spatial dimensions'
-    assert embed.ndim == 5 and skeleton.ndim == 5, 'Embed and skeleton must be a 5D tensor'
+    assert (
+        embed.ndim == 5 and skeleton.ndim == 5
+    ), "Embed and skeleton must be a 5D tensor"
 
-    b, c, x, y, z = embed.shape                     # get the shape of the embedding
-    embed = embed.view((c, -1)).round()             # flatten the embedding to extract it as an index
+    b, c, x, y, z = embed.shape  # get the shape of the embedding
+    embed = embed.view(
+        (c, -1)
+    ).round()  # flatten the embedding to extract it as an index
 
     # We need to only select indicies which lie within the skeleton
-    x_ind = embed[0, :].clamp(0, skeleton.shape[2]-1).long()
-    y_ind = embed[1, :].clamp(0, skeleton.shape[3]-1).long()
-    z_ind = embed[2, :].clamp(0, skeleton.shape[4]-1).long()
+    x_ind = embed[0, :].clamp(0, skeleton.shape[2] - 1).long()
+    y_ind = embed[1, :].clamp(0, skeleton.shape[3] - 1).long()
+    z_ind = embed[2, :].clamp(0, skeleton.shape[4] - 1).long()
 
-    out = torch.zeros((1, 1, x, y, z), device=embed.device, dtype=torch.int).flatten()   # For indexing to work, the out tensor
-                                                                           # has to be flat
+    out = torch.zeros(
+        (1, 1, x, y, z), device=embed.device, dtype=torch.int
+    ).flatten()  # For indexing to work, the out tensor
+    # has to be flat
 
-    ind = torch.arange(0, x_ind.shape[-1], device=embed.device)            # For each out pixel, we take the embedding at
-                                                                           # that loc and assign it to skeleton
+    ind = torch.arange(
+        0, x_ind.shape[-1], device=embed.device
+    )  # For each out pixel, we take the embedding at
+    # that loc and assign it to skeleton
 
-    out[ind] = skeleton[:, :, x_ind, y_ind, z_ind].int()  # assign the skeleton ind to the out tensor
+    out[ind] = skeleton[
+        :, :, x_ind, y_ind, z_ind
+    ].int()  # assign the skeleton ind to the out tensor
 
-    return out.view(1, 1, x, y, z)                  # return the re-shaped out tensor
+    return out.view(1, 1, x, y, z)  # return the re-shaped out tensor
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     skeleton = {1: torch.tensor([[10, 10, 2], [20, 20, 4]])}
     mask = torch.ones((1, 50, 50, 20))
 
     baked = bake_skeleton(mask, skeleton)
 
-    print(f'{baked[:,11,11,3]=}, {baked[:,21,21,5]=}')
+    print(f"{baked[:,11,11,3]=}, {baked[:,21,21,5]=}")

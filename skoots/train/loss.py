@@ -1,11 +1,12 @@
+from typing import List, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from typing import Optional, List, Union
 
-from skoots.lib.utils import crop_to_identical_size
 from skoots.lib.morphology import binary_erosion
+from skoots.lib.utils import crop_to_identical_size
 
 
 def tversky_graphable(pred, gt, alpha, beta):
@@ -13,7 +14,9 @@ def tversky_graphable(pred, gt, alpha, beta):
     false_positive: Tensor = torch.logical_not(gt).mul(pred).sum().add(1e-10).mul(alpha)
     false_negative: Tensor = ((1 - pred) * gt).sum() * beta
 
-    tversky = (true_positive + 1e-10) / (true_positive + false_positive + false_negative + 1e-10)
+    tversky = (true_positive + 1e-10) / (
+        true_positive + false_positive + false_negative + 1e-10
+    )
 
     return 1 - tversky
 
@@ -22,8 +25,9 @@ class jaccard(nn.Module):
     def __init__(self):
         super(jaccard, self).__init__()
 
-    def forward(self, predicted: torch.Tensor, ground_truth: torch.Tensor,
-                eps: float = 1e-10) -> torch.Tensor:
+    def forward(
+        self, predicted: torch.Tensor, ground_truth: torch.Tensor, eps: float = 1e-10
+    ) -> torch.Tensor:
         """
         Returns jaccard index of two torch.Tensors
 
@@ -51,8 +55,9 @@ class dice(nn.Module):
     def __init__(self):
         super(dice, self).__init__()
 
-    def forward(self, predicted: torch.Tensor, ground_truth: torch.Tensor,
-                smooth: float = 1e-10) -> torch.Tensor:
+    def forward(
+        self, predicted: torch.Tensor, ground_truth: torch.Tensor, smooth: float = 1e-10
+    ) -> torch.Tensor:
         """
         Returns dice index of two torch.Tensors
 
@@ -97,8 +102,9 @@ class tversky(nn.Module):
         self.beta = torch.tensor(beta)
         self.eps = torch.tensor(eps)
 
-    def forward(self, predicted: Union[Tensor, List[Tensor]], ground_truth: Tensor) -> Tensor:
-
+    def forward(
+        self, predicted: Union[Tensor, List[Tensor]], ground_truth: Tensor
+    ) -> Tensor:
         if self.alpha.device != predicted.device:  # silently caches device
             self.alpha.to(predicted.device)
             self.beta.to(predicted.device)
@@ -110,14 +116,29 @@ class tversky(nn.Module):
         if isinstance(predicted, list):
             for i, pred in enumerate(predicted):
                 futures.append(
-                    torch.jit.fork(self._tversky, pred, ground_truth[i, ...], self.alpha, self.beta, self.eps))
+                    torch.jit.fork(
+                        self._tversky,
+                        pred,
+                        ground_truth[i, ...],
+                        self.alpha,
+                        self.beta,
+                        self.eps,
+                    )
+                )
 
         # Already Batched Tensor
         elif isinstance(predicted, Tensor):
             for i in range(predicted.shape[0]):
                 futures.append(
-                    torch.jit.fork(self._tversky, predicted[i, ...], ground_truth[i, ...], self.alpha, self.beta,
-                                   self.eps))
+                    torch.jit.fork(
+                        self._tversky,
+                        predicted[i, ...],
+                        ground_truth[i, ...],
+                        self.alpha,
+                        self.beta,
+                        self.eps,
+                    )
+                )
 
         results: List[Tensor] = []
         for future in futures:
@@ -126,7 +147,9 @@ class tversky(nn.Module):
         return torch.mean(torch.stack(results))
 
     @staticmethod
-    def _tversky(pred: Tensor, gt: Tensor, alpha: Tensor, beta: Tensor, eps: float = 1e-8):
+    def _tversky(
+        pred: Tensor, gt: Tensor, alpha: Tensor, beta: Tensor, eps: float = 1e-8
+    ):
         """
         tversky loss on per image basis.
 
@@ -158,7 +181,9 @@ class tversky(nn.Module):
         # assert not torch.any(torch.isnan(pred)), torch.sum(torch.isnan(pred))
 
         true_positive: Tensor = pred.mul(nd_masks).sum()
-        false_positive: Tensor = torch.logical_not(nd_masks).mul(pred).sum().add(1e-10).mul(alpha)
+        false_positive: Tensor = (
+            torch.logical_not(nd_masks).mul(pred).sum().add(1e-10).mul(alpha)
+        )
         false_negative: Tensor = ((1 - pred) * nd_masks).sum() * beta
 
         # assert not torch.any(torch.isnan(true_positive)), torch.sum(torch.isnan(true_positive))
@@ -169,16 +194,18 @@ class tversky(nn.Module):
         # assert not torch.any(torch.isinf(false_negative))
         # assert not torch.any(torch.isinf(false_positive))
 
-        tversky = (true_positive + eps) / (true_positive + false_positive + false_negative + eps)
+        tversky = (true_positive + eps) / (
+            true_positive + false_positive + false_negative + eps
+        )
 
         return 1 - tversky
 
     def __repr__(self):
-        return f'LossFn[name=tversky, alpha={self.alpha.item()}, beta={self.beta.item()}, eps={self.eps.item()}'
+        return f"LossFn[name=tversky, alpha={self.alpha.item()}, beta={self.beta.item()}, eps={self.eps.item()}"
 
 
 class split(nn.Module):
-    def __init__(self, n_iter: int = 2, alpha: float = 2.0, device: str = 'cpu'):
+    def __init__(self, n_iter: int = 2, alpha: float = 2.0, device: str = "cpu"):
         """
         The "oh shit my skeletons have split" loss. This basically checks if an edge has crossed the middle
         of a GT object. If it does, it applies a crazy loss.
@@ -216,8 +243,7 @@ class split(nn.Module):
 
         distance = distance.div(self.n - 1)
 
-        pred = pred.sub(binary_erosion(pred)) \
-            .mul(2)  # cheeky edge detection function
+        pred = pred.sub(binary_erosion(pred)).mul(2)  # cheeky edge detection function
 
         _split_loss = self._split_loss(edges=pred, distance=distance, a=self.a)
 
@@ -231,8 +257,9 @@ class split(nn.Module):
 
 ############## clDICE LOSS FROM: https://github.com/jocpae/clDice/blob/master/cldice_loss/pytorch/soft_skeleton.py
 
+
 def soft_erode(img: Tensor) -> Tensor:
-    """ approximates morphological operations through max_pooling for 2D and 3D """
+    """approximates morphological operations through max_pooling for 2D and 3D"""
     if len(img.shape) == 4:
         p1 = -F.max_pool2d(-img, (3, 1), (1, 1), (1, 0))
         p2 = -F.max_pool2d(-img, (1, 3), (1, 1), (0, 1))
@@ -245,7 +272,7 @@ def soft_erode(img: Tensor) -> Tensor:
 
 
 def soft_dilate(img: Tensor) -> Tensor:
-    """ approximates morphological operations through max_pooling for 2D and 3D """
+    """approximates morphological operations through max_pooling for 2D and 3D"""
     if len(img.shape) == 4:
         return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
     elif len(img.shape) == 5:
@@ -253,7 +280,7 @@ def soft_dilate(img: Tensor) -> Tensor:
 
 
 def soft_open(img: Tensor) -> Tensor:
-    """ approximates morphological operations through max_pooling for 2D and 3D """
+    """approximates morphological operations through max_pooling for 2D and 3D"""
     return soft_dilate(soft_erode(img))
 
 
@@ -276,7 +303,7 @@ def soft_skeletonize(img: Tensor, iter_: int) -> Tensor:
 
 
 class soft_cldice(nn.Module):
-    def __init__(self, iter_=3, smooth=1.):
+    def __init__(self, iter_=3, smooth=1.0):
         super(soft_cldice, self).__init__()
         self.iter = iter_
         self.smooth = smooth
@@ -292,12 +319,16 @@ class soft_cldice(nn.Module):
         skeleton_predicted = soft_skeletonize(predicted, self.iter)
         skeleton_true = soft_skeletonize(ground_truth, self.iter)
 
-        tprec = (torch.sum(torch.multiply(skeleton_predicted, ground_truth)[:, 1:, ...]) + self.smooth) / (
-                torch.sum(skeleton_predicted[:, 1:, ...]) + self.smooth)
-        tsens = (torch.sum(torch.multiply(skeleton_true, predicted)[:, 1:, ...]) + self.smooth) / (
-                torch.sum(skeleton_true[:, 1:, ...]) + self.smooth)
+        tprec = (
+            torch.sum(torch.multiply(skeleton_predicted, ground_truth)[:, 1:, ...])
+            + self.smooth
+        ) / (torch.sum(skeleton_predicted[:, 1:, ...]) + self.smooth)
+        tsens = (
+            torch.sum(torch.multiply(skeleton_true, predicted)[:, 1:, ...])
+            + self.smooth
+        ) / (torch.sum(skeleton_true[:, 1:, ...]) + self.smooth)
 
-        cl_dice = 1. - 2.0 * (tprec * tsens) / (tprec + tsens)
+        cl_dice = 1.0 - 2.0 * (tprec * tsens) / (tprec + tsens)
 
         return cl_dice
 
@@ -312,16 +343,15 @@ def soft_dice(predicted: Tensor, ground_truth: Tensor, smooth: int = 1) -> Tenso
     :return:
     """
     intersection = torch.sum((ground_truth * predicted))
-    coeff = (2. * intersection + smooth) / (
-            torch.sum(ground_truth) + torch.sum(predicted) + smooth)
+    coeff = (2.0 * intersection + smooth) / (
+        torch.sum(ground_truth) + torch.sum(predicted) + smooth
+    )
 
-
-
-    return (1. - coeff)
+    return 1.0 - coeff
 
 
 class soft_dice_cldice(nn.Module):
-    def __init__(self, iter_=3, alpha=0.5, smooth=1.):
+    def __init__(self, iter_=3, alpha=0.5, smooth=1.0):
         super(soft_dice_cldice, self).__init__()
         self.iter = iter_
         self.smooth = smooth
@@ -343,20 +373,21 @@ class soft_dice_cldice(nn.Module):
         skel_true = soft_skeletonize(ground_truth, self.iter)
 
         tprec = (torch.sum(skel_pred * ground_truth) + self.smooth) / (
-                    torch.sum(skel_pred) + self.smooth)
+            torch.sum(skel_pred) + self.smooth
+        )
         tsens = (torch.sum(skel_true * predicted) + self.smooth) / (
-                    torch.sum(skel_true) + self.smooth)
+            torch.sum(skel_true) + self.smooth
+        )
 
-        cl_dice = 1. - 2.0 * (tprec * tsens) / (tprec + tsens)
-
+        cl_dice = 1.0 - 2.0 * (tprec * tsens) / (tprec + tsens)
 
         return (1.0 - self.alpha) * dice + self.alpha * cl_dice
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     lossfn = soft_dice_cldice()
 
-    predicted = torch.rand((1, 1, 20, 20, 10), device='cpu')
-    gt = torch.rand((1, 1, 20, 20, 10), device='cpu').round().float()
+    predicted = torch.rand((1, 1, 20, 20, 10), device="cpu")
+    gt = torch.rand((1, 1, 20, 20, 10), device="cpu").round().float()
     a = lossfn(predicted, gt)
     print(a)

@@ -1,49 +1,44 @@
-import torch
-from torch import Tensor
-import torch.nn as nn
-from typing import List, Tuple, Optional, Union, Dict
-from numbers import Number
-import numpy as np
-
-from yacs.config import CfgNode
-import bism.backends
-from bism.models.spatial_embedding import SpatialEmbedding
-import bism.modules
-from bism.models.spatial_embedding import SpatialEmbedding
 from functools import partial
+from numbers import Number
+from typing import List, Tuple, Optional
+
+import bism.backends
+import bism.modules
+import torch
+import torch.nn as nn
+from bism.models.spatial_embedding import SpatialEmbedding
+from torch import Tensor
+from yacs.config import CfgNode
 
 
 def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
-    """ utility function to get a bism model from cfg """
+    """utility function to get a bism model from cfg"""
 
     _valid_model_constructors = {
-        'bism_unext': bism.backends.unext.UNeXT_3D,
-        'bism_unet': bism.backends.unet.UNet_3D
+        "bism_unext": bism.backends.unext.UNeXT_3D,
+        "bism_unet": bism.backends.unet.UNet_3D,
     }
 
-    _valid_model_blocks = {
-        'block3d': bism.modules.convnext_block.Block3D
-    }
+    _valid_model_blocks = {"block3d": bism.modules.convnext_block.Block3D}
 
     _valid_upsample_layers = {
-        'upsamplelayer3d': bism.modules.upsample_layer.UpSampleLayer3D
+        "upsamplelayer3d": bism.modules.upsample_layer.UpSampleLayer3D
     }
 
     _valid_normalization = {
-        'layernorm': partial(bism.modules.layer_norm.LayerNorm, data_format='channels_first')
+        "layernorm": partial(
+            bism.modules.layer_norm.LayerNorm, data_format="channels_first"
+        )
     }
 
     _valid_activations = {
-        'gelu': torch.nn.GELU,
-        'relu': torch.nn.ReLU,
-        'silu': torch.nn.SiLU,
-        'selu': torch.nn.SELU
+        "gelu": torch.nn.GELU,
+        "relu": torch.nn.ReLU,
+        "silu": torch.nn.SiLU,
+        "selu": torch.nn.SELU,
     }
 
-    _valid_concat_blocks = {
-        'concatconv3d': bism.modules.concat.ConcatConv3D
-    }
-
+    _valid_concat_blocks = {"concatconv3d": bism.modules.concat.ConcatConv3D}
 
     model_config = [
         cfg.MODEL.DIMS,
@@ -59,13 +54,29 @@ def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
     ]
 
     model_kwargs = [
-        'dims', 'depths', 'kernel_size', 'drop_path_rate',
-        'layer_scale_init_value', 'activation', 'block',
-        'concat_conv', 'upsample_layer', 'normalization'
+        "dims",
+        "depths",
+        "kernel_size",
+        "drop_path_rate",
+        "layer_scale_init_value",
+        "activation",
+        "block",
+        "concat_conv",
+        "upsample_layer",
+        "normalization",
     ]
 
     valid_dicts = [
-        None, None, None, None, None, _valid_activations, _valid_model_blocks, _valid_concat_blocks, _valid_upsample_layers, _valid_normalization
+        None,
+        None,
+        None,
+        None,
+        None,
+        _valid_activations,
+        _valid_model_blocks,
+        _valid_concat_blocks,
+        _valid_upsample_layers,
+        _valid_normalization,
     ]
 
     kwarg = {}
@@ -74,14 +85,18 @@ def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
             if config in vd:
                 kwarg[kw] = vd[config]
             else:
-                raise RuntimeError(f'{config} is not a valid config option for {kw}. Valid options are: {vd.keys()}')
+                raise RuntimeError(
+                    f"{config} is not a valid config option for {kw}. Valid options are: {vd.keys()}"
+                )
         else:
             kwarg[kw] = config
 
     if cfg.MODEL.ARCHITECTURE in _valid_model_constructors:
         backbone = _valid_model_constructors[cfg.MODEL.ARCHITECTURE]
     else:
-        raise RuntimeError(f'{cfg.MODEL.ARCHITECTURE} is not a valid model constructor, valid options are: {_valid_model_constructors.keys()}')
+        raise RuntimeError(
+            f"{cfg.MODEL.ARCHITECTURE} is not a valid model constructor, valid options are: {_valid_model_constructors.keys()}"
+        )
 
     backbone = backbone(cfg.MODEL.IN_CHANNELS, cfg.MODEL.OUT_CHANNELS, **kwarg)
     model = SpatialEmbedding(backbone)
@@ -89,8 +104,9 @@ def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
     return model
 
 
-def calculate_indexes(pad_size: int, eval_image_size: int,
-                      image_shape: int, padded_image_shape: int) -> List[List[int]]:
+def calculate_indexes(
+    pad_size: int, eval_image_size: int, image_shape: int, padded_image_shape: int
+) -> List[List[int]]:
     """
     This calculates indexes for the complete evaluation of an arbitrarily large image by unet.
     each index is offset by eval_image_size, but has a width of eval_image_size + pad_size * 2.
@@ -117,9 +133,11 @@ def calculate_indexes(pad_size: int, eval_image_size: int,
     try:
         ind_list = torch.arange(0, image_shape, eval_image_size)
     except RuntimeError:
-        raise RuntimeError(f'Calculate_indexes has incorrect values {pad_size} | {image_shape} | {eval_image_size}:\n'
-                           f'You are likely trying to have a chunk smaller than the set evaluation image size. '
-                           'Please decrease number of chunks.')
+        raise RuntimeError(
+            f"Calculate_indexes has incorrect values {pad_size} | {image_shape} | {eval_image_size}:\n"
+            f"You are likely trying to have a chunk smaller than the set evaluation image size. "
+            "Please decrease number of chunks."
+        )
     ind = []
     for i, z in enumerate(ind_list):
         if i == 0:
@@ -130,19 +148,23 @@ def calculate_indexes(pad_size: int, eval_image_size: int,
             ind.append([z1, z2])
         else:
             break
-    if not ind:  # Sometimes z is so small the first part doesnt work. Check if z_ind is empty, if it is do this!!!
+    if (
+        not ind
+    ):  # Sometimes z is so small the first part doesnt work. Check if z_ind is empty, if it is do this!!!
         z1 = 0
         z2 = eval_image_size + pad_size * 2
         ind.append([z1, z2])
-        ind.append([padded_image_shape - (eval_image_size + pad_size * 2), padded_image_shape])
+        ind.append(
+            [padded_image_shape - (eval_image_size + pad_size * 2), padded_image_shape]
+        )
     else:  # we always add at the end to ensure that the whole thing is covered.
         z1 = padded_image_shape - (eval_image_size + pad_size * 2)
         z2 = padded_image_shape - 1
         ind.append([z1, z2])
     return ind
 
-def get_dtype_offset(dtype: str = 'uint16',
-                     image_max: Optional[Number] = None) -> int:
+
+def get_dtype_offset(dtype: str = "uint16", image_max: Optional[Number] = None) -> int:
     """
     Returns the scaling factor such that
     such that :math:`\frac{image}{f} \in [0, ..., 1]`
@@ -155,20 +177,23 @@ def get_dtype_offset(dtype: str = 'uint16',
     """
 
     encoding = {
-        'uint16': 2 ** 16,
-        'uint8': 2 ** 8,
-        'uint12': 2 ** 12,
-        'float64': 1,
+        "uint16": 2**16,
+        "uint8": 2**8,
+        "uint12": 2**12,
+        "float64": 1,
     }
     dtype = str(dtype)
     if dtype in encoding:
         scale = encoding[dtype]
     else:
         print(
-            f'\x1b[1;31;40m' + f'ERROR: Unsupported dtype: {dtype}. Currently support: {[k for k in encoding]}' + '\x1b[0m')
+            f"\x1b[1;31;40m"
+            + f"ERROR: Unsupported dtype: {dtype}. Currently support: {[k for k in encoding]}"
+            + "\x1b[0m"
+        )
         scale = None
         if image_max:
-            print(f'Appropriate Scale Factor inferred from image maximum: {image_max}')
+            print(f"Appropriate Scale Factor inferred from image maximum: {image_max}")
             if image_max <= 256:
                 scale = 256
             else:
@@ -190,7 +215,8 @@ def _crop3d(img: Tensor, x: int, y: int, z: int, w: int, h: int, d: int) -> Tens
     :param d: depth of crop box
     :return:
     """
-    return img[..., x:x + w, y:y + h, z:z + d]
+    return img[..., x : x + w, y : y + h, z : z + d]
+
 
 @torch.jit.script
 def _crop2d(img: Tensor, x: int, y: int, w: int, h: int) -> Tensor:
@@ -207,7 +233,8 @@ def _crop2d(img: Tensor, x: int, y: int, w: int, h: int) -> Tensor:
     :return:
     """
 
-    return img[..., x:x + w, y:y + h]
+    return img[..., x : x + w, y : y + h]
+
 
 @torch.jit.script
 def crop_to_identical_size(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
@@ -219,7 +246,9 @@ def crop_to_identical_size(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
     :return:
     """
     if a.ndim < 3:
-        raise RuntimeError('Only supports tensors with minimum 3dimmensions and shape [..., X, Y, Z]')
+        raise RuntimeError(
+            "Only supports tensors with minimum 3dimmensions and shape [..., X, Y, Z]"
+        )
 
     a = _crop3d(a, x=0, y=0, z=0, w=b.shape[-3], h=b.shape[-2], d=b.shape[-1])
     b = _crop3d(b, x=0, y=0, z=0, w=a.shape[-3], h=a.shape[-2], d=a.shape[-1])
@@ -228,14 +257,14 @@ def crop_to_identical_size(a: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
 
 @torch.jit.script
 def cantor2(a: Tensor, b: Tensor) -> Tensor:
-    " Hashes two combination of tensors together "
-    return .5 * (a + b) * (a + b + 1) + b
+    "Hashes two combination of tensors together"
+    return 0.5 * (a + b) * (a + b + 1) + b
 
 
 @torch.jit.script
 def cantor3(a: Tensor, b: Tensor, c: Tensor) -> Tensor:
-    " Hashes three combination of tensors together "
-    return (.5 * (cantor2(a, b) + c) * (cantor2(a, b) + c + 1) + c).int()
+    "Hashes three combination of tensors together"
+    return (0.5 * (cantor2(a, b) + c) * (cantor2(a, b) + c + 1) + c).int()
 
 
 @torch.jit.script

@@ -1,14 +1,12 @@
-import numpy as np
 import skoots.train.loss
+from typing import Dict, Tuple
+
 import torch
 from torch import Tensor
-import torchvision
-from skoots.validate.utils import imread
-from skoots.train.loss import soft_cldice
-from typing import Dict, List, Tuple, Optional
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-import os.path
+
+import skoots.train.loss
+from skoots.validate.utils import imread
 
 
 def mask_to_bbox(mask: Tensor) -> Tuple[Tensor, Tensor]:
@@ -29,7 +27,7 @@ def mask_to_bbox(mask: Tensor) -> Tuple[Tensor, Tensor]:
     :param mask: Input instance segmentation mask
     :return: id labels and bboxes
     """
-    assert mask.ndim == 4, 'Mask ndim != 4'
+    assert mask.ndim == 4, "Mask ndim != 4"
 
     sparse_mask = mask.to_sparse()
 
@@ -38,7 +36,9 @@ def mask_to_bbox(mask: Tensor) -> Tuple[Tensor, Tensor]:
 
     unique = torch.unique(values)  # assured to have no zeros because tensor is sparse
 
-    bboxes = torch.empty((6, unique.shape[0]), device=mask.device, dtype=torch.int16)  # preallocate for speed
+    bboxes = torch.empty(
+        (6, unique.shape[0]), device=mask.device, dtype=torch.int16
+    )  # preallocate for speed
 
     for i, u in enumerate(unique):
         ind = indices[1::, values == u]  # just x,y,z dim of indicies
@@ -62,7 +62,14 @@ def valid_box_inds(boxes):
     :return: [N]
     """
 
-    x0, y0, z0, x1, y1, z1 = boxes[0, :], boxes[1, :], boxes[2, :], boxes[3, :], boxes[4, :], boxes[5, :]
+    x0, y0, z0, x1, y1, z1 = (
+        boxes[0, :],
+        boxes[1, :],
+        boxes[2, :],
+        boxes[3, :],
+        boxes[4, :],
+        boxes[5, :],
+    )
     inds = torch.logical_and(torch.logical_and((x1 > x0), (y1 > y0)), (z1 > z0))
     return inds
 
@@ -93,31 +100,37 @@ def box_iou(a: Tensor, b: Tensor) -> Tensor:
     b = b.T.float()  # we'll have buffer overflow otherwise
 
     # find intersection
-    lower_bounds = torch.max(a[:, :3].unsqueeze(1), b[:, :3].unsqueeze(0)).float()  # (n, m, 3)
-    upper_bounds = torch.min(a[:, 3:].unsqueeze(1), b[:, 3:].unsqueeze(0)).float()  # (n, m, 3)
+    lower_bounds = torch.max(
+        a[:, :3].unsqueeze(1), b[:, :3].unsqueeze(0)
+    ).float()  # (n, m, 3)
+    upper_bounds = torch.min(
+        a[:, 3:].unsqueeze(1), b[:, 3:].unsqueeze(0)
+    ).float()  # (n, m, 3)
 
     intersection_dims = torch.clamp(upper_bounds - lower_bounds, min=0)  # (n1, n2, 3)
 
-    intersection = intersection_dims[:, :, 0].float() * \
-                   intersection_dims[:, :, 1].float() * \
-                   intersection_dims[:, :, 2].float()  # (n, m)
+    intersection = (
+        intersection_dims[:, :, 0].float()
+        * intersection_dims[:, :, 1].float()
+        * intersection_dims[:, :, 2].float()
+    )  # (n, m)
 
     # Find areas of each box in both sets
-    areas_a = (a[:, 3] - a[:, 0]) * \
-              (a[:, 4] - a[:, 1]) * \
-              (a[:, 5] - a[:, 2])  # (n)
+    areas_a = (a[:, 3] - a[:, 0]) * (a[:, 4] - a[:, 1]) * (a[:, 5] - a[:, 2])  # (n)
 
-    areas_b = (b[:, 3] - b[:, 0]) * \
-              (b[:, 4] - b[:, 1]) * \
-              (b[:, 5] - b[:, 2])  # (m)
+    areas_b = (b[:, 3] - b[:, 0]) * (b[:, 4] - b[:, 1]) * (b[:, 5] - b[:, 2])  # (m)
 
     union = areas_a.unsqueeze(1) + areas_b.unsqueeze(0) - intersection  # (n1, n2)
 
     return intersection / union  # (n1, n2)
 
 
-def calculate_accuracies_from_bbox(ground_truth: Dict[str, Tensor], predictions: Dict[str, Tensor],
-                                   device: str | None = None, threshold=0.1):
+def calculate_accuracies_from_bbox(
+    ground_truth: Dict[str, Tensor],
+    predictions: Dict[str, Tensor],
+    device: str | None = None,
+    threshold=0.1,
+):
     """
     Calculates True positive, False Positive, False Negative from data_dict of segmentation 3d bboxes
 
@@ -128,47 +141,62 @@ def calculate_accuracies_from_bbox(ground_truth: Dict[str, Tensor], predictions:
     :return:
     """
 
-    device = device if device else ground_truth['boxes'].device
+    device = device if device else ground_truth["boxes"].device
 
-    _gt = ground_truth['boxes'].to(device)
-    _pred = predictions['boxes'].to(device)
+    _gt = ground_truth["boxes"].to(device)
+    _pred = predictions["boxes"].to(device)
 
     iou = box_iou(_gt, _pred)
 
     gt_max, gt_indicies = iou.max(dim=1)
     gt = torch.logical_not(gt_max.gt(threshold)) if iou.shape[1] > 0 else torch.ones(0)
-    pred = torch.logical_not(iou.max(dim=0)[0].gt(threshold)) if iou.shape[0] > 0 else torch.ones(0)
+    pred = (
+        torch.logical_not(iou.max(dim=0)[0].gt(threshold))
+        if iou.shape[0] > 0
+        else torch.ones(0)
+    )
 
     true_positive = torch.sum(torch.logical_not(gt))
     false_positive = torch.sum(pred)
     false_negative = torch.sum(gt)
 
-    return true_positive, false_positive, false_negative,
+    return (
+        true_positive,
+        false_positive,
+        false_negative,
+    )
 
 
 def accuracies_from_iou(iou: Tensor, thr: float = 0.1) -> Tensor:
-
     gt_max, gt_indicies = iou.max(dim=1)
     gt = torch.logical_not(gt_max.gt(thr)) if iou.shape[1] > 0 else torch.ones(0)
-    pred = torch.logical_not(iou.max(dim=0)[0].gt(thr)) if iou.shape[0] > 0 else torch.ones(0)
+    pred = (
+        torch.logical_not(iou.max(dim=0)[0].gt(thr))
+        if iou.shape[0] > 0
+        else torch.ones(0)
+    )
 
     true_positive = torch.sum(torch.logical_not(gt))
     false_positive = torch.sum(pred)
     false_negative = torch.sum(gt)
 
-    return true_positive.cpu().item(), false_positive.cpu().item(), false_negative.cpu().item()
+    return (
+        true_positive.cpu().item(),
+        false_positive.cpu().item(),
+        false_negative.cpu().item(),
+    )
 
 
 def mask_iou(gt: Tensor, pred: Tensor):
     """
-    Calculates the IoU of each object on a per-mask-basis. 
+    Calculates the IoU of each object on a per-mask-basis.
 
     :param gt: mask 1 with N instances
     :param pred: mask 2 with M instances
     :return: NxM matrix of IoU's
     """
-    assert gt.shape == pred.shape, 'Input tensors must be the same shape'
-    assert gt.device == pred.device, 'Input tensors must be on the same device'
+    assert gt.shape == pred.shape, "Input tensors must be the same shape"
+    assert gt.device == pred.device, "Input tensors must be on the same device"
 
     a_unique = gt.unique()
     a_unique = a_unique[a_unique > 0]
@@ -176,11 +204,15 @@ def mask_iou(gt: Tensor, pred: Tensor):
     b_unique = pred.unique()
     b_unique = b_unique[b_unique > 0]
 
-    iou = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+    iou = torch.zeros(
+        (a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device
+    )
 
-    for i, au in tqdm(enumerate(a_unique), total = len(a_unique)):
+    for i, au in tqdm(enumerate(a_unique), total=len(a_unique)):
         _a = gt == au
-        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = pred[
+            _a
+        ].unique()  # we only calculate iou of lables which have "contact with" our mask
         touching = touching[touching != 0]
 
         for j, bu in enumerate(b_unique):
@@ -190,7 +222,7 @@ def mask_iou(gt: Tensor, pred: Tensor):
                 intersection = torch.logical_and(_a, _b).sum()
                 union = torch.logical_or(_a, _b).sum()
 
-                iou[i, j] = intersection/union
+                iou[i, j] = intersection / union
             else:
                 iou[i, j] = 0.0
 
@@ -205,8 +237,8 @@ def mask_dice(gt: Tensor, pred: Tensor):
     :param pred: mask 2 with M instances
     :return: NxM matrix of IoU's
     """
-    assert gt.shape == pred.shape, 'Input tensors must be the same shape'
-    assert gt.device == pred.device, 'Input tensors must be on the same device'
+    assert gt.shape == pred.shape, "Input tensors must be the same shape"
+    assert gt.device == pred.device, "Input tensors must be on the same device"
 
     a_unique = gt.unique()
     a_unique = a_unique[a_unique > 0]
@@ -214,11 +246,15 @@ def mask_dice(gt: Tensor, pred: Tensor):
     b_unique = pred.unique()
     b_unique = b_unique[b_unique > 0]
 
-    dice = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+    dice = torch.zeros(
+        (a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device
+    )
 
-    for i, au in tqdm(enumerate(a_unique), total = len(a_unique)):
+    for i, au in tqdm(enumerate(a_unique), total=len(a_unique)):
         _a = gt == au
-        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = pred[
+            _a
+        ].unique()  # we only calculate iou of lables which have "contact with" our mask
         touching = touching[touching != 0]
 
         for j, bu in enumerate(b_unique):
@@ -226,16 +262,17 @@ def mask_dice(gt: Tensor, pred: Tensor):
                 _b = pred == bu
 
                 numerator = torch.logical_and(_a, _b).sum() * 2
-                denominator = _a.sum()+_b.sum()
+                denominator = _a.sum() + _b.sum()
 
-                assert numerator < denominator, f'{numerator=}, {denominator=}, {_a.sum()=}, {_b.sum()=}, {(_a*_b).sum()=}'
+                assert (
+                    numerator < denominator
+                ), f"{numerator=}, {denominator=}, {_a.sum()=}, {_b.sum()=}, {(_a*_b).sum()=}"
 
-                dice[i, j] = numerator/denominator
+                dice[i, j] = numerator / denominator
             else:
                 dice[i, j] = 0.0
 
     return dice
-
 
 
 def mask_soft_cldice(gt: Tensor, pred: Tensor):
@@ -246,8 +283,8 @@ def mask_soft_cldice(gt: Tensor, pred: Tensor):
     :param pred: mask 2 with M instances
     :return: NxM matrix of IoU's
     """
-    assert gt.shape == pred.shape, 'Input tensors must be the same shape'
-    assert gt.device == pred.device, 'Input tensors must be on the same device'
+    assert gt.shape == pred.shape, "Input tensors must be the same shape"
+    assert gt.device == pred.device, "Input tensors must be on the same device"
 
     a_unique = gt.unique()
     a_unique = a_unique[a_unique > 0]
@@ -256,11 +293,15 @@ def mask_soft_cldice(gt: Tensor, pred: Tensor):
     b_unique = b_unique[b_unique > 0]
 
     criterion = torch.compile(skoots.train.loss.soft_cldice())
-    cldice = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device)
+    cldice = torch.zeros(
+        (a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=gt.device
+    )
 
-    for i, au in tqdm(enumerate(a_unique), total = len(a_unique)):
+    for i, au in tqdm(enumerate(a_unique), total=len(a_unique)):
         _a = gt == au
-        touching = pred[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = pred[
+            _a
+        ].unique()  # we only calculate iou of lables which have "contact with" our mask
         touching = touching[touching != 0]
 
         for j, bu in enumerate(b_unique):
@@ -273,8 +314,6 @@ def mask_soft_cldice(gt: Tensor, pred: Tensor):
     return cldice
 
 
-
-
 def sparse_mask_iou(a: Tensor, b: Tensor) -> Tensor:
     """
     Calculates the IoU of each object on a per-mask-basis using sparse tensors.
@@ -283,10 +322,10 @@ def sparse_mask_iou(a: Tensor, b: Tensor) -> Tensor:
     :param b: mask 2 with M instances
     :return: NxM matrix of IoU's
     """
-    raise NotImplementedError('In Development...')
+    raise NotImplementedError("In Development...")
 
-    assert a.shape == b.shape, 'Input tensors must be the same shape'
-    assert a.device == b.device, 'Input tensors must be on the same device'
+    assert a.shape == b.shape, "Input tensors must be the same shape"
+    assert a.device == b.device, "Input tensors must be on the same device"
 
     shape = a.shape
 
@@ -299,22 +338,27 @@ def sparse_mask_iou(a: Tensor, b: Tensor) -> Tensor:
     a_indicies = a.indicies()
     b_indicies = b.indicies()
 
-    iou = torch.zeros((a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=a.device)
+    iou = torch.zeros(
+        (a_unique.shape[0], b_unique.shape[0]), dtype=torch.float, device=a.device
+    )
 
     for i, au in tqdm(enumerate(a_unique)):
         for j, bu in enumerate(b_unique):
-
             _a_ind = a_indicies[a.lables() == au]
             _b_ind = b_indicies[b.lables() == bu]
 
-            a_sparse = torch.sparse_coo_tensor(indices=_a_ind, labels=torch.ones_like(a.labels() == au), size=shape)
-            b_sparse = torch.sparse_coo_tensor(indices=_b_ind, labels=torch.ones_like(b.labels() == bu), size=shape)
+            a_sparse = torch.sparse_coo_tensor(
+                indices=_a_ind, labels=torch.ones_like(a.labels() == au), size=shape
+            )
+            b_sparse = torch.sparse_coo_tensor(
+                indices=_b_ind, labels=torch.ones_like(b.labels() == bu), size=shape
+            )
 
 
 def f1_score(tp, fp, fn):
     num = 2 * tp
-    dem = 2*tp + fp + fn
-    return num/dem
+    dem = 2 * tp + fp + fn
+    return num / dem
 
 
 def _iou_instance_dict(a: Tensor, b: Tensor) -> Dict[int, Tensor]:
@@ -331,13 +375,14 @@ def _iou_instance_dict(a: Tensor, b: Tensor) -> Dict[int, Tensor]:
     b_unique = b.unique()
     b_unique = b_unique[b_unique > 0]
 
-
     iou = {}
 
     for i, au in tqdm(enumerate(a_unique), total=len(a_unique)):
         _a = a == au
 
-        touching = b[_a].unique()  # we only calculate iou of lables which have "contact with" our mask
+        touching = b[
+            _a
+        ].unique()  # we only calculate iou of lables which have "contact with" our mask
         touching = touching[touching != 0]
         iou[au] = []
 
@@ -387,11 +432,15 @@ def get_segmentation_errors(ground_truth: Tensor, predicted: Tensor) -> float:
 
 
 if __name__ == "__main__":
-    gt = imread('../../tests/test_data/hide_validate.labels.tif')[..., 2:-2]
-    pred = imread('../../tests/test_data/hide_validate_skeleton_instance_mask.tif')[..., 2:-2]
-    aff_pred = imread('../../tests/test_data/hide_validation_affinity_instance_segmentaiton.tif')[..., 2:-2]
+    gt = imread("../../tests/test_data/hide_validate.labels.tif")[..., 2:-2]
+    pred = imread("../../tests/test_data/hide_validate_skeleton_instance_mask.tif")[
+        ..., 2:-2
+    ]
+    aff_pred = imread(
+        "../../tests/test_data/hide_validation_affinity_instance_segmentaiton.tif"
+    )[..., 2:-2]
 
-    device = 'cuda' if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     gt = gt.to(device)
     pred = pred.to(device)
     aff_pred = aff_pred.to(device)
@@ -403,7 +452,6 @@ if __name__ == "__main__":
 
     skoots_seg_errors = get_segmentation_errors(gt, pred)
     aff_seg_errors = get_segmentation_errors(gt, aff_pred)
-
 
     # print('SKOOTS IOU')
     # if not os.path.exists('../../tests/iou_gt_skoots_mask.trch'):

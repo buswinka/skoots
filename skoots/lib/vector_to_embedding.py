@@ -1,8 +1,8 @@
-from typing import List, Tuple
+from typing import List
+from typing import Tuple
+
 import torch
 from torch import Tensor
-
-from typing import Tuple
 
 """
 2D and 3D implementations of vector to embedding. 
@@ -15,21 +15,21 @@ object locations.
 
 """
 
+
 @torch.jit.script
 def get_vector_mesh(shape: Tuple[int, int, int, int, int], device: str) -> Tensor:
-    """ generates a 3d mesh from a vector """
+    """generates a 3d mesh from a vector"""
     axis_ind: List[Tensor] = [
         torch.linspace(0, shape[2] - 1, shape[2], device=device),
         torch.linspace(0, shape[3] - 1, shape[3], device=device),
-        torch.linspace(0, shape[4] - 1, shape[4], device=device)
+        torch.linspace(0, shape[4] - 1, shape[4], device=device),
     ]
 
-    mesh: List[Tensor] = torch.meshgrid(axis_ind, indexing='ij')
+    mesh: List[Tensor] = torch.meshgrid(axis_ind, indexing="ij")
     mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh: Tensor = torch.cat(mesh, dim=1)
 
     return mesh
-
 
 
 @torch.jit.script
@@ -64,10 +64,10 @@ def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
 
     axis_ind: List[Tensor] = [
         torch.linspace(0, vector.shape[2] - 1, vector.shape[2], device=vector.device),
-        torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device)
+        torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device),
     ]
 
-    mesh = torch.meshgrid(axis_ind, indexing='ij')
+    mesh = torch.meshgrid(axis_ind, indexing="ij")
     mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh: Tensor = torch.cat(mesh, dim=1)
 
@@ -94,10 +94,10 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     axis_ind: List[Tensor] = [
         torch.linspace(0, vector.shape[2] - 1, vector.shape[2], device=vector.device),
         torch.linspace(0, vector.shape[3] - 1, vector.shape[3], device=vector.device),
-        torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device)
+        torch.linspace(0, vector.shape[4] - 1, vector.shape[4], device=vector.device),
     ]
 
-    mesh: List[Tensor] = torch.meshgrid(axis_ind, indexing='ij')
+    mesh: List[Tensor] = torch.meshgrid(axis_ind, indexing="ij")
     mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh: Tensor = torch.cat(mesh, dim=1)
 
@@ -113,13 +113,18 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
             index[:, i, ...] = torch.clamp(index[:, i, ...], 0, k)
 
         # 3d index to raveled
-        index = (index[:, [0], ...] * y * z) + (index[:, [1], ...] * z) + (index[:, [2], ...])
+        index = (
+            (index[:, [0], ...] * y * z)
+            + (index[:, [1], ...] * z)
+            + (index[:, [2], ...])
+        )
         index = index.clamp(0, x * y * z - 1).long()
 
         for i in range(c):
             mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
 
     return mesh
+
 
 def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
     """
@@ -151,7 +156,11 @@ def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
     """
 
     # assert vector.ndim in [4, 5], f'Vector must be a 4D or 5D tensor, not {vector.ndim}D: {vector.shape=}'
-    return _vec2embed3D(scale, vector, N) if vector.ndim == 5 else _vec2embed2D(scale, vector)
+    return (
+        _vec2embed3D(scale, vector, N)
+        if vector.ndim == 5
+        else _vec2embed2D(scale, vector)
+    )
 
 
 def vec2embedND(scale, vector):
@@ -164,22 +173,32 @@ def vec2embedND(scale, vector):
     :param vector: [B, C, X, Y, Z?]
     :return:
     """
-    assert scale.shape[0] == vector.shape[1], \
-        f'Cannot use {scale.shape[0]}D scale with vector shape: {vector.shape}'
-    assert scale.shape[0] == vector.ndim - 2, \
-        f'Cannot use {scale.shape[0]}D scale with {vector.ndim - 2}D vector shape [B, C, ...]: {vector.shape}'
+    assert (
+        scale.shape[0] == vector.shape[1]
+    ), f"Cannot use {scale.shape[0]}D scale with vector shape: {vector.shape}"
+    assert (
+        scale.shape[0] == vector.ndim - 2
+    ), f"Cannot use {scale.shape[0]}D scale with {vector.ndim - 2}D vector shape [B, C, ...]: {vector.shape}"
 
     num: Tensor = torch.clone(scale.float())
 
-    newshape: Tuple[int] = tuple([1, scale.shape[0]] + [1, ] * (vector.ndim - 2))
+    newshape: Tuple[int] = tuple(
+        [1, scale.shape[0]]
+        + [
+            1,
+        ]
+        * (vector.ndim - 2)
+    )
 
     axis_ind: List[Tensor] = []
     for i in range(vector.ndim - 2):
         axis_ind.append(
-            torch.linspace(0, vector.shape[2 + i] - 1, vector.shape[2 + i], device=vector.device)
+            torch.linspace(
+                0, vector.shape[2 + i] - 1, vector.shape[2 + i], device=vector.device
+            )
         )
 
-    mesh = torch.meshgrid(axis_ind, indexing='ij')
+    mesh = torch.meshgrid(axis_ind, indexing="ij")
     mesh = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh = torch.cat(mesh, dim=1)
 
@@ -188,13 +207,12 @@ def vec2embedND(scale, vector):
     return mesh + vector
 
 
-if __name__ == '__main__':
-    vector = torch.ones((1,3,10,10,10))
+if __name__ == "__main__":
+    vector = torch.ones((1, 3, 10, 10, 10))
     vector[:, 0, ...] = -1
     vector[:, 1, ...] = -1
     vector[:, 2, ...] = -1
 
     out = vector_to_embedding(torch.tensor((1, 1, 1)), vector, N=4)
 
-    print(f'{out[0, :, 3, 3, 3]=}')
-
+    print(f"{out[0, :, 3, 3, 3]=}")

@@ -1,6 +1,7 @@
 ```{eval-rst}
 .. include:: sinebow.rst
 ```
+
 <img src="../../resources/skoots_train_api_flow.pdf" align="center" class="only-light"/>
 <img src="../../resources/skoots_train_api_flow_inverted.pdf" align="center" class="only-dark"/>
 

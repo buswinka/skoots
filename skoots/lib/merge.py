@@ -1,10 +1,10 @@
-import torch
 from torch import Tensor
-from typing import Tuple, Union, List
+from typing import Tuple, List
 
-def get_adjacent_labels(
-        x: Tensor, y: Tensor
-                        ) ->List[Tuple[int, int]]:
+from torch import Tensor
+
+
+def get_adjacent_labels(x: Tensor, y: Tensor) -> List[Tuple[int, int]]:
     """
     calculates which masks of a signle object have two labels (due to the border)
 

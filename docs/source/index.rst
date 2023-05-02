@@ -74,5 +74,3 @@ implementation.
                     :maxdepth: 3
 
                     simple_train
-                    detailed_training
-                    custom_train_engine

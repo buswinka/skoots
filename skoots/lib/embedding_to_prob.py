@@ -3,7 +3,9 @@ from torch import Tensor
 
 
 @torch.jit.script
-def baked_embed_to_prob(embedding: Tensor, baked_skeletons: Tensor, sigma: Tensor, eps: float = 1e-16) -> Tensor:
+def baked_embed_to_prob(
+    embedding: Tensor, baked_skeletons: Tensor, sigma: Tensor, eps: float = 1e-16
+) -> Tensor:
     r"""
     N Dimensional embedding to probability with a baked skeleton array
 
@@ -35,18 +37,19 @@ def baked_embed_to_prob(embedding: Tensor, baked_skeletons: Tensor, sigma: Tenso
     sigma = sigma + eps  # when sigma goes to zero, things tend to break
     sigma = sigma.pow(2).mul(2).mul(-1)
 
-    out = torch.exp((embedding - baked_skeletons)
-                    .pow(2)
-                    .transpose(1, -1)  # work for 2D and 3D by following pytorch broadcasting rules (channels last dim)
-                    .div(sigma)
-                    .transpose(1, -1)
-                    .sum(dim=1, keepdim=True))
+    out = torch.exp(
+        (embedding - baked_skeletons)
+        .pow(2)
+        .transpose(
+            1, -1
+        )  # work for 2D and 3D by following pytorch broadcasting rules (channels last dim)
+        .div(sigma)
+        .transpose(1, -1)
+        .sum(dim=1, keepdim=True)
+    )
 
     return out
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass
-
-

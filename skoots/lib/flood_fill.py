@@ -1,16 +1,13 @@
-import torch
-from torch import Tensor
-from skimage.morphology import flood_fill, flood
-from tqdm import tqdm
-from typing import Tuple, Optional, Union, Dict, List
+from typing import Tuple, Dict, List
 
-from skimage.morphology import skeletonize as sk_skeletonize
-from skoots.lib.cropper import crops, get_total_num_crops
-
-from scipy.ndimage import label
-
-from numba import njit, prange
 import numpy as np
+import torch
+from numba import njit, prange
+from scipy.ndimage import label
+from torch import Tensor
+from tqdm import tqdm
+
+from skoots.lib.cropper import crops, get_total_num_crops
 
 
 def efficient_flood_fill(skeleton: Tensor) -> Tensor:
@@ -24,12 +21,16 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     :return: Flood filled tensor
     """
     skeleton = skeleton.unsqueeze(0) if skeleton.ndim == 3 else skeleton
-    total = get_total_num_crops(skeleton.shape, crop_size=[1000, 1000, 100], overlap=[0,0,0])
-    iterator = tqdm(crops(skeleton, crop_size=[1000, 1000, 200]), desc='Flood-filling small crops: ')
+    total = get_total_num_crops(
+        skeleton.shape, crop_size=[1000, 1000, 100], overlap=[0, 0, 0]
+    )
+    iterator = tqdm(
+        crops(skeleton, crop_size=[1000, 1000, 200]), desc="Flood-filling small crops: "
+    )
     max_id = 1
     skeletons_dict = {}
 
-    seams_x = [] # this will be all the seams of the crops we need to check later.
+    seams_x = []  # this will be all the seams of the crops we need to check later.
     seams_y = []
     seams_z = []
 
@@ -42,9 +43,11 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
         # crop should only contain ones and zeros and be an int. Not guaranteed by skoots.lib.cropper.crops
         crop = crop.squeeze().gt(0).int()
 
-        crop, max_id = flood_all(crop, max_id + 1)  # max_id is the previous max - update by 1!
+        crop, max_id = flood_all(
+            crop, max_id + 1
+        )  # max_id is the previous max - update by 1!
         w, h, d = crop.shape
-        skeleton[0, x:x + w, y:y + h, z:z + d] = crop
+        skeleton[0, x : x + w, y : y + h, z : z + d] = crop
 
     # We now check each crop seam for double labeled instances. Here, a collision is the same object having label (x)
     # in one crop, then label (y) in another.  We must check in all dims, x, y, and z.
@@ -52,21 +55,21 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     # print(f'[      ] Detecting collisions...', end='')
     # X
     collisions: List[Tuple[int, int]] = []
-    for x in tqdm(seams_x, desc='Checking for duplicate IDs in X', total=len(seams_x)):
+    for x in tqdm(seams_x, desc="Checking for duplicate IDs in X", total=len(seams_x)):
         if x > 0:
             slice_0 = skeleton[0, x, :, :]
             slice_1 = skeleton[0, x - 1, :, :]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
     # Y
-    for y in tqdm(seams_y, desc='Checking for duplicate IDs in Y', total=len(seams_y)):
+    for y in tqdm(seams_y, desc="Checking for duplicate IDs in Y", total=len(seams_y)):
         if y > 0:
             slice_0 = skeleton[0, :, y, :]
-            slice_1 = skeleton[0, :, y-1, :]
+            slice_1 = skeleton[0, :, y - 1, :]
             collisions.extend(get_adjacent_labels(slice_0, slice_1))
 
     # Z
-    for z in tqdm(seams_z, desc='Checking for duplicate IDs in Z', total=len(seams_z)):
+    for z in tqdm(seams_z, desc="Checking for duplicate IDs in Z", total=len(seams_z)):
         if z > 0:
             slice_0 = skeleton[0, :, :, z]
             slice_1 = skeleton[0, :, :, z - 1]
@@ -75,9 +78,9 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     # print("\r[\x1b[1;32;40m DONE \x1b[0m] Detecting collisions...")
 
     # Multiple collisions for each id value may exist, so we construct a graph of id values
-    print(f'[      ] Constructing collision graph...', end='')
+    print(f"[      ] Constructing collision graph...", end="")
     graph: Dict[int, List[int]] = {}
-    for (a, b) in collisions:
+    for a, b in collisions:
         if a not in graph:
             graph[a] = [b]
         else:
@@ -89,7 +92,7 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     print("\r[\x1b[1;32;40m DONE \x1b[0m] Constructing collision graph...")
 
     # Each skeleton, of multiple potential id values, forms a connected component in the graph
-    print(f'[      ] Identifying connected components...', end='')
+    print(f"[      ] Identifying connected components...", end="")
     cc: List[List[int]] = connected_components(graph)
     print("\r[\x1b[1;32;40m DONE \x1b[0m] Identifying connected components...")
 
@@ -106,11 +109,15 @@ def efficient_flood_fill(skeleton: Tensor) -> Tensor:
     # for every pixel at position j, if it is identical to a value at position i in two_replace,
     # we replace pixel j with the new value: replace_with[i]
 
-    collisions = [(a, b) for a, b in zip(to_replace, replace_with)]  # replace needs a set of collisions
+    collisions = [
+        (a, b) for a, b in zip(to_replace, replace_with)
+    ]  # replace needs a set of collisions
 
-    print(f'[      ] Performing in place replacement of collisions...', end='')
+    print(f"[      ] Performing in place replacement of collisions...", end="")
     skeleton = replace(skeleton, collisions)  # in place replace
-    print("\r[\x1b[1;32;40m DONE \x1b[0m] Performing in place replacement of collisions...")
+    print(
+        "\r[\x1b[1;32;40m DONE \x1b[0m] Performing in place replacement of collisions..."
+    )
 
     return skeleton.squeeze(0)
 
@@ -133,8 +140,13 @@ def flood_all(x: Tensor, id: int) -> Tuple[Tensor, int, Dict[int, Tensor]]:
     return mask, mask.max()
 
 
-def dfs(connected: List[int], node: int, graph: Dict[int, List[int]], visited: Dict[int, bool]) -> List[int]:
-    """ depth first search for finding connected components of a graph """
+def dfs(
+    connected: List[int],
+    node: int,
+    graph: Dict[int, List[int]],
+    visited: Dict[int, bool],
+) -> List[int]:
+    """depth first search for finding connected components of a graph"""
     visited[node] = True
     connected.append(node)
     for n in graph[node]:
@@ -163,7 +175,9 @@ def connected_components(graph: Dict[int, List[int]]) -> List[List[int]]:
 
 
 @njit(parallel=True)
-def _in_place_replace(x: np.ndarray, to_replace: np.ndarray, replace_with: np.ndarray) -> None:
+def _in_place_replace(
+    x: np.ndarray, to_replace: np.ndarray, replace_with: np.ndarray
+) -> None:
     """
     Performs an in place replacement of values in tensor x.
 
@@ -175,15 +189,17 @@ def _in_place_replace(x: np.ndarray, to_replace: np.ndarray, replace_with: np.nd
     :param replace_with: array of values by which should be replaced
     :return:
     """
-    assert to_replace.shape == replace_with.shape, 'to_replace must be the same size as replace with'
-    assert x.ndim == 1, 'input tensor must be reveled'
+    assert (
+        to_replace.shape == replace_with.shape
+    ), "to_replace must be the same size as replace with"
+    assert x.ndim == 1, "input tensor must be reveled"
 
     for i in prange(x.shape[0]):
         # ind = to_replace == x[i]
         # if np.any(ind):
         for j, v in enumerate(to_replace):
             if x[i] == v:
-                x[i] = replace_with[j] #replace_with[ind][0]
+                x[i] = replace_with[j]  # replace_with[ind][0]
                 break  # presumably most of the time we'll hit the actual value much sooner...
 
 
@@ -205,7 +221,7 @@ def replace(x: Tensor, collisions: List[Tuple[int, int]]) -> Tensor:
     :return: Original tensor with modified memory
     """
 
-    assert x.dtype == torch.int16, f'Input tensor datatype must be int16 not {x.dtype}'
+    assert x.dtype == torch.int16, f"Input tensor datatype must be int16 not {x.dtype}"
 
     shape = x.shape
     x = x.flatten().numpy()
@@ -218,9 +234,7 @@ def replace(x: Tensor, collisions: List[Tuple[int, int]]) -> Tensor:
     return torch.from_numpy(x).view(shape)
 
 
-def get_adjacent_labels(
-        x: Tensor, y: Tensor
-                        ) ->List[Tuple[int, int]]:
+def get_adjacent_labels(x: Tensor, y: Tensor) -> List[Tuple[int, int]]:
     """
     calculates which masks of a signle object have two labels (due to the border)
 
@@ -246,18 +260,18 @@ def get_adjacent_labels(
     # identical = identical if len(identical) > 0 else None
     return identical
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     graph = {
         1: [2, 3],
         2: [1],
-        3: [1,5,4],
+        3: [1, 5, 4],
         4: [5],
         5: [3],
         6: [7],
-        7: [6,8,9],
+        7: [6, 8, 9],
         8: [7],
-        9: [7]
+        9: [7],
     }
     cc = connected_components(graph)
     print(cc)
-

@@ -1,17 +1,12 @@
+from typing import Optional
+
+import numpy as np
+import skimage.io as io
 import torch
 from torch import Tensor
-import skimage.io as io
-import numpy as np
-from typing import Optional
-from torch import nn
-from yacs.config import CfgNode
-
-import bism.models
-import bism.modules
 
 
-def imread(image_path: str,
-           pin_memory: Optional[bool] = False) -> Tensor:
+def imread(image_path: str, pin_memory: Optional[bool] = False) -> Tensor:
     """
     Imports an image from file and returns in torch format
 
@@ -33,8 +28,7 @@ def imread(image_path: str,
     return image
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     from skoots.config import get_cfg_defaults
 
     cfg = get_cfg_defaults()

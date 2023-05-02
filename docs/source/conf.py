@@ -6,10 +6,10 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'skoots'
-copyright = '2022, Chris Buswinka'
-author = 'Chris Buswinka'
-release = '0.0.1'
+project = "skoots"
+copyright = "2022, Chris Buswinka"
+author = "Chris Buswinka"
+release = "0.0.1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -22,8 +22,8 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.todo",
     "sphinx.ext.viewcode",
-    'sphinx.ext.autosectionlabel',  # use :ref:`Heading` for any heading
-    'myst_nb',
+    "sphinx.ext.autosectionlabel",  # use :ref:`Heading` for any heading
+    "myst_nb",
     # Our custom extension, only meant for Furo's own documentation.
     "furo.sphinxext",
     # External stuff
@@ -47,28 +47,38 @@ myst_enable_extensions = [
     "tasklist",
 ]
 
-nb_execution_mode = 'off'
+nb_execution_mode = "off"
 
-templates_path = ['_templates']
-exclude_patterns = ['build', '_build', '**.ipynb_checkpoints', 'links.rst', 'sinebow.rst']
+templates_path = ["_templates"]
+exclude_patterns = [
+    "build",
+    "_build",
+    "**.ipynb_checkpoints",
+    "links.rst",
+    "sinebow.rst",
+]
 
 source_suffix = {
-    '.rst': 'restructuredtext',
-    '.ipynb': 'myst-nb',
-    '.myst': 'myst-nb',
+    ".rst": "restructuredtext",
+    ".ipynb": "myst-nb",
+    ".myst": "myst-nb",
 }
 
-autoclass_content = 'init'
+autoclass_content = "init"
 
 # exclude_patterns = ['sinebow.rst']
 
 
 # from omnipose. Thanks!
 import math
+
+
 def rgb_2_hex(rgb):
-    return f'#{hex(int(rgb[0]))[-2::]}{hex(int(rgb[1]))[-2::]}{hex(int(rgb[2]))[-2::]}'
+    return f"#{hex(int(rgb[0]))[-2::]}{hex(int(rgb[1]))[-2::]}{hex(int(rgb[2]))[-2::]}"
+
+
 def sinebow(N, bg_color=[0, 0, 0, 0]):
-    """ Generate a color dictionary for use in visualizing N-colored labels. Background color
+    """Generate a color dictionary for use in visualizing N-colored labels. Background color
     defaults to transparent black.
 
     Parameters
@@ -87,25 +97,29 @@ def sinebow(N, bg_color=[0, 0, 0, 0]):
     colordict = {0: bg_color}
     for j in range(N):
         angle = j * 2 * math.pi / (N)
-        r = ((math.cos(angle) + 1) / 2)
-        g = ((math.cos(angle + 2 * math.pi / 3) + 1) / 2)
-        b = ((math.cos(angle + 4 * math.pi / 3) + 1) / 2)
-        colordict.update({j + 1: [int(r*255), int(g*255), int(b*255), int(1*255)]})
+        r = (math.cos(angle) + 1) / 2
+        g = (math.cos(angle + 2 * math.pi / 3) + 1) / 2
+        b = (math.cos(angle + 4 * math.pi / 3) + 1) / 2
+        colordict.update(
+            {j + 1: [int(r * 255), int(g * 255), int(b * 255), int(1 * 255)]}
+        )
     return colordict
+
+
 N = 42
 colors = sinebow(N)
-colors = [rgb_2_hex(colors[i]) for i in range(1, N+1)]
+colors = [rgb_2_hex(colors[i]) for i in range(1, N + 1)]
 colordict = {}
 for i in range(N):
-    colordict['sinebow' + '%0d' % i] = colors[i]
+    colordict["sinebow" + "%0d" % i] = colors[i]
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 # html_theme = 'alabaster'
 html_theme = "furo"
-html_static_path = ['_static']
+html_static_path = ["_static"]
 
-templates_path = ['_templates']
+templates_path = ["_templates"]
 html_show_sphinx = False
 
 html_theme_options = {
@@ -113,7 +127,7 @@ html_theme_options = {
         "color-brand-primary": "blue",
         "color-brand-content": "#CC3333",
         "color-admonition-background": "orange",
-        "sinebow0":"#CC3333",
+        "sinebow0": "#CC3333",
     },
     "sidebar_hide_name": True,
     "top_of_page_button": "edit",
