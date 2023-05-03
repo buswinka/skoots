@@ -10,7 +10,7 @@
         </h4>
 
 
-.. image:: ../../resources/skooting_in_progress_v2.png
+.. image:: ../resources/skooting_in_progress_v2.png
 
 SKOOTS is an approach at high resolution, 3D mitochondria segmentation. Bridging the gap between boundary-prediction networks
 and flow based approaches, SKOOTS offers robust segmentation of high resolution mitochondria in previously difficult situations.

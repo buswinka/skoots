@@ -5,11 +5,11 @@
 
 This gives the rough flow of data outlining the data augmetnation procedure to train a SKOOTS model.
 
-.. image:: ../../resources/skoots_transforms_api_flow.pdf
+.. image:: ../resources/skoots_transforms_api_flow.pdf
    :width: 800
    :class: only-light
 
-.. image:: ../../resources/skoots_transforms_api_flow_inverted.pdf
+.. image:: ../resources/skoots_transforms_api_flow_inverted.pdf
    :width: 800
    :class: only-dark
 

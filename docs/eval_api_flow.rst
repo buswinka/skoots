@@ -7,11 +7,11 @@ This gives the rough flow of data from one function to the next, neccessary to
 perform instance segmentation with SKOOTS. Each image is expected to be a 5D tensor with
 shape (B, C, X, Y, Z).
 
-.. image:: ../../resources/skoots_eval_api_flow.pdf
+.. image:: ../resources/skoots_eval_api_flow.pdf
    :width: 800
    :class: only-light
 
-.. image:: ../../resources/skoots_eval_api_flow_inverted.pdf
+.. image:: ../resources/skoots_eval_api_flow_inverted.pdf
    :width: 800
    :class: only-dark
 

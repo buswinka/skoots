@@ -6,11 +6,11 @@
 Presented here is the rough flow of data from necessary to train a SKOOTS segmentation model. This is markedly different
 from evaluation, which is presented elsewhere.
 
-.. image:: ../../resources/skoots_train_api_flow.pdf
+.. image:: ../resources/skoots_train_api_flow.pdf
    :width: 800
    :class: only-light
 
-.. image:: ../../resources/skoots_train_api_flow_inverted.pdf
+.. image:: ../resources/skoots_train_api_flow_inverted.pdf
    :width: 800
    :class: only-dark
 

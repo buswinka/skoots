@@ -15,7 +15,7 @@ release = "0.0.1"
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 
-master_doc = 'source/index'
+master_doc = 'index'
 
 extensions = [
     # Sphinx's own extensions
@@ -138,4 +138,4 @@ html_theme_options = {
     "dark_css_variables": colordict,
 }
 
-html_logo = "../../resources/skooting_in_progress.png"
+html_logo = "../resources/skooting_in_progress.png"
