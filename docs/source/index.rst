@@ -40,22 +40,7 @@ implementation.
                     quickstart_inference
 
 
-            .. grid-item-card::
 
-                .. toctree::
-                    :caption: API Flow
-                    :maxdepth: 2
-
-                    eval_api_flow.rst
-                    train_api_flow.rst
-                    transforms_api_flow
-
-
-
-    .. grid-item::
-
-        .. grid:: 1 1 1 1
-            :gutter: 2
 
             .. grid-item-card::
 
@@ -69,6 +54,21 @@ implementation.
                     detailed_inference
 
 
+    .. grid-item::
+
+        .. grid:: 1 1 1 1
+            :gutter: 2
+
+            .. grid-item-card::
+
+                .. toctree::
+                    :caption: API Flow
+                    :maxdepth: 2
+
+                    eval_api_flow.rst
+                    train_api_flow.rst
+                    transforms_api_flow
+
             .. grid-item-card::
 
                 .. toctree::
@@ -76,4 +76,6 @@ implementation.
                     :maxdepth: 2
 
                     api_reference
+
+
 
