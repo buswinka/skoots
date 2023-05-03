@@ -18,7 +18,7 @@ def main():
     eval_args = parser.add_argument_group("eval arguments")
     eval_args.add_argument("--image", type=str, help="path to image")
     eval_args.add_argument(
-        "--pretrained_checkpoint",
+        "--pretrained-checkpoint",
         type=str,
         help="path to a pretrained skoots model. Will be used"
         "as a starting point for training",
@@ -42,7 +42,7 @@ def main():
     # accessory script arguments
     accessory_args = parser.add_argument_group("scripting arguments")
     accessory_args.add_argument(
-        "--skeletonize_train_data", help="calculate skeletons of training data"
+        "--skeletonize-train-data", help="calculate skeletons of training data"
     )
     accessory_args.add_argument(
         "--downscaleXY",

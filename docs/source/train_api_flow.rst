@@ -28,3 +28,16 @@ from evaluation, which is presented elsewhere.
     :members: forward
     :private-members:  _tversky
     :noindex:
+
+.. autoclass:: skoots.train.dataloader.dataset
+    :special-members: __init__ __len__ __get_item__
+    :members: cpu cuda pin_memory to
+    :noindex:
+
+.. autoclass:: skoots.train.dataloader.MultiDataset
+    :special-members: __init__ __len__ __get_item__
+    :members: cpu cuda pin_memory to
+    :noindex:
+
+.. autofunction:: skoots.train.dataloader.skeleton_colate
+    :noindex:

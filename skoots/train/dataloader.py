@@ -8,6 +8,7 @@ import skimage.io as io
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
+
 # from skoots.train.merged_transform import get_centroids
 from tqdm import tqdm
 
@@ -23,15 +24,23 @@ class dataset(Dataset):
         device: Optional[str] = "cpu",
         sample_per_image: Optional[int] = 1,
     ):
-        """
+        r"""
+        Custom dataset for loading and accessing skoots training data. This class loads data based on filenames and
+        specific extensions: '.tif' (raw image), '.labels.tif' (instance masks), '.skeletons.tif' (precomputed skeletons).
+        An example training data folder might contain the following:
+        ::
+            data\
+             └  train\
+                  │ train_data.tif
+                  │ train_data.labels.tif
+                  └ train_data.skeletons.tif
 
-        Will output as device, but for all data to be stored on device, you must explicitly call self.to(device)
 
-        :param path:
-        :param transforms:
-        :param pad_size:
-        :param device:
-        :param sample_per_image:
+        :param path: Path to training data
+        :param transforms: A function which applies dataset augmentation on a data_dict
+        :param pad_size: padding to add to every image in the dataset
+        :param device: torch.device which to **output** all data on
+        :param sample_per_image: number of times each image/mask pair is sampled per iteration over a dataset
         """
 
         super(Dataset, self).__init__()
@@ -140,7 +149,10 @@ class dataset(Dataset):
 
     def to(self, device: str):
         """
-        It is faster to do transforms on cuda, and if your GPU is big enough, everything can live there!!!
+        Sends all data stored in the dataloader to a device.
+
+        :param device: torch device for images, masks, and skeletons
+        :return: self
         """
         self.image = [x.to(device) for x in self.image]
         self.masks = [x.to(device) for x in self.masks]
@@ -151,16 +163,19 @@ class dataset(Dataset):
         return self
 
     def cuda(self):
+        """alias for self.to('cuda:0')"""
         self.to("cuda:0")
         return self
 
     def cpu(self):
+        """alias for self.to('cpu')"""
+        self.to("cuda:0")
         self.to("cpu")
         return self
 
     def pin_memory(self):
         """
-        It is faster to do transforms on cuda, and if your GPU is big enough, everything can live there!!!
+        Pins underlying memory allowing faster transfer to GPU
         """
         self.image = [x.pin_memory() for x in self.image]
         self.masks = [x.pin_memory() for x in self.masks]
@@ -175,20 +190,36 @@ class BackgroundDataset(Dataset):
         self,
         path: Union[List[str], str],
         transforms: Optional[Transform] = lambda x: x,
-        pad_size: Optional[int] = 100,
         device: Optional[str] = "cpu",
         sample_per_image: Optional[int] = 1,
     ):
         super(Dataset, self).__init__()
-        """
-        A dataset for images that contain nothing
-        """
+        r"""
+        Custom dataset for loading and accessing skoots background training data. 
+        Unlike skoots.train.dataloader.dataset, which looks for masks and skeletons, 
+        this dataset meed only images given that the images do not contain any actuall instances of the thing you're
+        trying to segment - i.e. its background. 
+        
+        An example training data folder might contain the following:
+        ::
+            data\
+             └  background\
+                  └ background_image.tif
+
+
+        :param path: Path to background data
+        :param transforms: A function which applies background_dataset augmentation on a data_dict
+        :param pad_size: padding to add to every image in the dataset
+        :param device: torch.device which to **output** all data on
+        :param sample_per_image: number of times each image/mask pair is sampled per iteration over a dataset
+           """
 
         # Reassigning variables
         self.files = []
         self.image = []
         self.transforms = transforms
         self.device = device
+        self.sample_per_image = sample_per_image
 
         path: List[str] = [path] if isinstance(path, str) else path
 
@@ -257,7 +288,10 @@ class BackgroundDataset(Dataset):
 
     def to(self, device: str):
         """
-        It is faster to do transforms on cuda, and if your GPU is big enough, everything can live there!!!
+        Sends all data stored in the dataloader to a device.
+
+        :param device: torch device for images, masks, and skeletons
+        :return: self
         """
         self.image = [x.to(device) for x in self.image]
         self.masks = [x.to(device) for x in self.masks]
@@ -268,16 +302,42 @@ class BackgroundDataset(Dataset):
         return self
 
     def cuda(self):
+        """alias for self.to('cuda:0')"""
         self.to("cuda:0")
         return self
 
     def cpu(self):
+        """alias for self.to('cpu')"""
         self.to("cpu")
         return self
 
 
 class MultiDataset(Dataset):
     def __init__(self, *args):
+        r"""
+        A utility class for joining multiple datasets into one accessible class. Sometimes, you may subdivide your
+        training data based on some criteria. The most common is size: data from folder data/train/train_alot must be sampled 100 times
+        per epoch, while data from folder data/train/train_notsomuch might only want to be sampled 1 times per epoch.
+
+        You could construct a two skoots.train.dataloader.dataset objects for each
+        and access both in a single MultiDataset class...
+
+        >>> from skoots.train.dataloader import dataset
+        >>>
+        >>> # has one image sampled 100 times
+        >>> data0 = dataset('data/train/train_alot', sample_per_image=100)
+        >>> print(len(data0))  # 100
+        >>>
+        >>> # has one image sampled once
+        >>> data1 = dataset('data/train/train_notsomuch', sample_per_image=1)
+        >>> print(len(data1))  # 1
+        >>>
+        >>> merged_data = MultiDataset(data0, data1)
+        >>> print(len(merged_data))  # 101, they've been merged!
+
+        :param args:
+        :type args:
+        """
         self.datasets: List[Dataset] = []
         for ds in args:
             if isinstance(ds, Dataset):
@@ -305,16 +365,24 @@ class MultiDataset(Dataset):
             raise RuntimeError
 
     def to(self, device: str):
+        """
+        Sends all data stored in the dataloader to a device. Occurs for ALL wrapped datasets.
+
+        :param device: torch device for images, masks, and skeletons
+        :return: self
+        """
         for i in range(self.num_datasets):
             self.datasets[i].to(device)
         return self
 
     def cuda(self):
+        """alias for self.to('cuda:0')"""
         for i in range(self.num_datasets):
             self.datasets[i].to("cuda:0")
         return self
 
     def cpu(self):
+        """alias for self.to('cpu')"""
         for i in range(self.num_datasets):
             self.datasets[i].to("cpu")
         return self
@@ -323,7 +391,16 @@ class MultiDataset(Dataset):
 # Custom batching function!
 def skeleton_colate(
     data_dict: List[Dict[str, Tensor]]
-) -> Tuple[Tensor, List[Dict[str, Tensor]]]:
+) -> Tuple[Tensor, Tensor, List[Dict[str, Tensor]], Tensor, Tensor]:
+    """
+    Colate function with defines how we batch training data.
+    Unpacks a data_dict with keys: 'image', 'masks', 'skele_masks', 'baked-skeleton', 'skeleton'
+    and puts them each into a Tensor. This should not be called outright, rather passed to a
+    torch.DataLoader for automatic batching.
+
+    :param data_dict: Dictonary of augmented training data
+    :return: Tuple of batched data
+    """
     images = torch.stack([dd.pop("image") for dd in data_dict], dim=0)
     masks = torch.stack([dd.pop("masks") for dd in data_dict], dim=0)
     skele_masks = torch.stack([dd.pop("skele_masks") for dd in data_dict], dim=0)
@@ -335,29 +412,3 @@ def skeleton_colate(
     skeletons = [dd.pop("skeletons") for dd in data_dict]
 
     return images, masks, skeletons, skele_masks, baked
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    from hcat.train.merged_transform import merged_transform_3D
-    from torch.utils.data import DataLoader
-
-    path = (
-        "/home/chris/Dropbox (Partners HealthCare)/HairCellInstance/data/segmentation/"
-    )
-
-    data = dataset(path=path + "train", transforms=merged_transform_3D, device="cuda:0")
-
-    dl = DataLoader(data, batch_size=2, shuffle=False, collate_fn=colate)
-    for _ in range(1):
-        for i, (image, masks, centroids) in enumerate(dl):
-            print(image.max())
-            plt.imshow(image[0, 0, :, :, 7].cpu().float().numpy())
-            plt.imshow(masks[0, 0, :, :, 7].gt(0).cpu().float().numpy(), alpha=0.2)
-
-            for c in centroids[0]:
-                plt.plot(c[1].cpu().numpy(), c[0].cpu().numpy(), "ro")
-            plt.title(i)
-            plt.show()
-            if centroids[0].numel() == 0:
-                raise ValueError

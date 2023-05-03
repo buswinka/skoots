@@ -1,6 +1,5 @@
 import os
 import os.path
-import warnings
 from functools import partial
 from statistics import mean
 from typing import Callable, Union, Dict
@@ -9,7 +8,6 @@ import torch
 import torch.nn as nn
 import torch.optim.lr_scheduler
 import torch.optim.swa_utils
-from lion_pytorch import Lion
 from torch import Tensor
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
@@ -35,7 +33,6 @@ _valid_optimizers = {
     "adamw": torch.optim.AdamW,
     "adam": torch.optim.Adam,
     "sgd": torch.optim.SGD,
-    "lion": Lion,
     "adamax": torch.optim.Adamax,
 }
 
@@ -165,7 +162,7 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
 
     # TRAIN LOOP ----------------------------
 
-    num = torch.tensor(cfg.SKOOTS.VECTOR_SCALING, device=device)
+    vector_scale = torch.tensor(cfg.SKOOTS.VECTOR_SCALING, device=device)
 
     optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](
         model.parameters(),
@@ -232,7 +229,7 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
             vector: Tensor = out[:, 0:3:1, ...]
             predicted_skeleton: Tensor = out[:, [-2], ...]
 
-            embedding: Tensor = vector_to_embedding(num, vector)
+            embedding: Tensor = vector_to_embedding(vector_scale, vector)
             out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
             _loss_embed = loss_embed(
@@ -283,7 +280,7 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
                 vector: Tensor = out[:, 0:3:1, ...]
                 predicted_skeleton: Tensor = out[:, [-2], ...]
 
-                embedding: Tensor = vector_to_embedding(num, vector)
+                embedding: Tensor = vector_to_embedding(vector_scale, vector)
                 out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                 _loss_embed = loss_embed(
@@ -372,7 +369,7 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
                         predicted_skeleton: Tensor = out[:, [-2], ...]
                         vector: Tensor = out[:, 0:3:1, ...]
 
-                        embedding: Tensor = vector_to_embedding(num, vector)
+                        embedding: Tensor = vector_to_embedding(vector_scale, vector)
                         out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                         _loss_embed = loss_embed(out, masks.gt(0).float())

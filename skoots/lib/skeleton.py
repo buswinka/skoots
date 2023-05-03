@@ -56,7 +56,7 @@ def bake_skeleton(
     average: bool = True,
     device: str = "cpu",
 ) -> Tensor:
-    """
+    r"""
     For each pixel :math:`p_ik` of object :math:`k` at index :math:`i\in[x,y,z]` in masks, returns a baked skeleton
     where the value at each index is the closest skeleton point :math:`s_{jk}` of any instance :math:`k`.
 
@@ -69,7 +69,7 @@ def bake_skeleton(
     euclidean distance function :math:`f(a, b)` and the skeleton point of any instance:
 
     .. math::
-        S_{i} = min\left( f(i, s_{k}) \right) for k \in [1, 2, ..., N]
+        S_{i} = min \left( f(i, s_{k})\right)\ for\ k \in [1, 2, ..., N]
 
     Shapes:
         - masks: :math:`(1, X_{in}, Y_{in}, Z_{in})`
@@ -129,7 +129,7 @@ def skeleton_to_mask(
     kernel_size: Tuple[int, int, int] = (15, 15, 1),
     n: int = 2,
 ) -> Tensor:
-    """
+    r"""
     Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or whatever...
 
     Shapes:
@@ -173,13 +173,13 @@ def skeleton_to_mask(
 
 
 def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
-    """
+    r"""
     Returns an instance mask by indexing skeleton with an embedding tensor
     For memory efficiency, skeleton is only ever Referenced! Never copied (I hope)
 
     Shapes:
-        -skeleton: :math:`(B_{in}=1, 1, X_{in}, Y_{in}, Z_{in})`
-        -embed: :math:`(B_{in}=1, 3, X_{in}, Y_{in}, Z_{in})`
+        - skeleton: :math:`(B_{in}=1, 1, X_{in}, Y_{in}, Z_{in})`
+        - embed: :math:`(B_{in}=1, 3, X_{in}, Y_{in}, Z_{in})`
 
     :param skeleton: Skeleton of a single instance
     :param embed: Embedding

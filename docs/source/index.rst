@@ -1,13 +1,14 @@
 .. include:: sinebow.rst
 
-:nge-red:`SKOOTS`
-=================
+.. raw:: html
 
-:nge-red:`Sk` eleton
-:nge-yellow:`O` riented
-:nge-mint-green:`O` bjec
-:nge-green:`t`
-:nge-green:`S` egmentation
+        <h1>
+            <span style="color: #e72333">SK</span><span style="color: #e7a316">O</span><span style="color: #73bf85">OT</span><span style="color: #5a9432">S</span>
+        </h1>
+        <h4>
+            <span style="color: #e72333">Sk</span>eleton <span style="color: #e7a316">O</span>riented <span style="color: #73bf85">O</span>bjec<span style="color: #73bf85">t</span> <span style="color: #5a9432">S</span>egmentation
+        </h4>
+
 
 .. image:: ../../resources/skooting_in_progress_v2.png
 
@@ -30,24 +31,14 @@ implementation.
 
                 .. toctree::
                     :caption: Basics
-                    :maxdepth: 3
+                    :maxdepth: 1
 
-                    basics.rst
+                    quickstart
+                    installation
+                    quickstart_train
+                    quickstart_evaluation
+                    quickstart_inference
 
-            .. grid-item-card::
-
-                .. toctree::
-                    :caption: Evaluation
-                    :maxdepth: 3
-
-                    evaluation
-
-
-
-    .. grid-item::
-
-        .. grid:: 1 1 1 1
-            :gutter: 2
 
             .. grid-item-card::
 
@@ -59,6 +50,25 @@ implementation.
                     train_api_flow.rst
                     transforms_api_flow
 
+
+
+    .. grid-item::
+
+        .. grid:: 1 1 1 1
+            :gutter: 2
+
+            .. grid-item-card::
+
+                .. toctree::
+                    :caption: Tutorials
+                    :maxdepth: 3
+
+                    simple_train
+                    simple_inference
+                    detailed_training
+                    detailed_inference
+
+
             .. grid-item-card::
 
                 .. toctree::
@@ -67,10 +77,3 @@ implementation.
 
                     api_reference
 
-            .. grid-item-card::
-
-                .. toctree::
-                    :caption: Training
-                    :maxdepth: 3
-
-                    simple_train

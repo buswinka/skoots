@@ -1,7 +1,7 @@
 from typing import Dict
 
 import torch
-from hcat.validate.stats import get_volume, get_surface_area
+from skoots.validate.stats import get_volume, get_surface_area
 from torch import Tensor
 
 

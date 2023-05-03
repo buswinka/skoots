@@ -128,8 +128,6 @@ skoots.train.utils
    :private-members:
 
 
-
-
 skoots.train.erosion
 --------------------
 .. automodule:: skoots.train.erosion
@@ -137,3 +135,33 @@ skoots.train.erosion
    :undoc-members:
    :private-members:
 
+:nge-mint-green:`skoots.validate`
+=================================
+
+skoots.validate.compare
+-----------------------
+.. automodule:: skoots.validate.compare
+   :members:
+   :undoc-members:
+   :private-members:
+
+skoots.validate.lib
+-------------------
+.. automodule:: skoots.validate.lib
+   :members:
+   :undoc-members:
+   :private-members:
+
+skoots.validate.stats
+---------------------
+.. automodule:: skoots.validate.stats
+   :members:
+   :undoc-members:
+   :private-members:
+
+skoots.validate.utils
+---------------------
+.. automodule:: skoots.validate.utils
+   :members:
+   :undoc-members:
+   :private-members:

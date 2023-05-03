@@ -82,12 +82,12 @@ def eval(
     skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.int16)
     vectors = torch.zeros((3, x, y, z), dtype=torch.half)
 
-    logging.info(f"Constructing BISM model")
+    logging.info(f"Constructing SKOOTS model")
     base_model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
     base_model.load_state_dict(state_dict=checkpoint["model_state_dict"])
     base_model = base_model.to(device).train()
 
-    logging.info(f"Compiling BISM model with torch inductor")
+    logging.info(f"Compiling SKOOTS model with torch inductor")
     model = torch.compile(base_model)
     for _ in range(10):
         _ = model(torch.rand((1, 1, 300, 300, 20), device=device, dtype=torch.float))
