@@ -9,10 +9,13 @@
 project = "skoots"
 copyright = "2023, Chris Buswinka"
 author = "Chris Buswinka"
-release = "0.0.0"
+release = "0.0.1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
+
+
+master_doc = 'source/index'
 
 extensions = [
     # Sphinx's own extensions
@@ -134,6 +137,5 @@ html_theme_options = {
     "top_of_page_button": "edit",
     "dark_css_variables": colordict,
 }
-html_theme_options
 
 html_logo = "../../resources/skooting_in_progress.png"
