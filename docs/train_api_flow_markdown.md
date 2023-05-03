@@ -2,8 +2,8 @@
 .. include:: sinebow.rst
 ```
 
-<img src="../../resources/skoots_train_api_flow.pdf" align="center" class="only-light"/>
-<img src="../../resources/skoots_train_api_flow_inverted.pdf" align="center" class="only-dark"/>
+<img src="../resources/skoots_train_api_flow.pdf" align="center" class="only-light"/>
+<img src="../resources/skoots_train_api_flow_inverted.pdf" align="center" class="only-dark"/>
 
 ```{eval-rst} 
 .. autofunction:: skoots.lib.embedding_to_prob.baked_embed_to_prob

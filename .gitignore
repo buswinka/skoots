@@ -21,6 +21,7 @@ tests/
 docs/build/
 develop-eggs/
 dist/
+jupyter_execute/
 downloads/
 eggs/
 .eggs/
@@ -137,3 +138,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 /runs/
+/docs_build/
+/jupyter_execute/
+/jupyter_execute/
