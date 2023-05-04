@@ -14,7 +14,7 @@ To install, make sure pyTorch is installed with CUDA support.
 pip install skoots
 ```
 
-Documentation: ![skoots.readthedocs.io](skoots.readthedocs.io)
+Documentation: skoots.readthedocs.io
 
 BioRxiv: soon...
 
