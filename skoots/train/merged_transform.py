@@ -9,6 +9,7 @@ from yacs.config import CfgNode
 
 from skoots.lib.morphology import binary_erosion
 from skoots.lib.skeleton import bake_skeleton, skeleton_to_mask
+from skoots.lib.types import DataDict
 
 
 @torch.jit.script
@@ -71,7 +72,7 @@ def _get_affine_matrix(
     return T @ C @ RSS @ torch.inverse(C)
 
 
-def calc_centroid(mask: torch.Tensor, id: int) -> torch.Tensor:
+def calc_centroid(mask: Tensor, id: int) -> Tensor:
     temp = (mask == id).float()
 
     # crop the region to just erode small region...
@@ -124,7 +125,7 @@ def calc_centroid(mask: torch.Tensor, id: int) -> torch.Tensor:
 @torch.jit.ignore()
 def transform_from_cfg(
     data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
-) -> Dict[str, Tensor]:
+) -> DataDict:
     DEVICE: str = str(data_dict["image"].device) if device is None else device
 
     # Image should be in shape of [C, H, W, D]
@@ -389,7 +390,7 @@ def transform_from_cfg(
         average=True,
         device=DEVICE,
     )
-    data_dict["baked-skeleton"]: Union[Tensor, None] = baked
+    data_dict["baked_skeleton"]: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
     data_dict["skele_masks"]: Tensor = skeleton_to_mask(
@@ -404,7 +405,7 @@ def transform_from_cfg(
 
 def background_transform_from_cfg(
     data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
-) -> Dict[str, Tensor]:
+) -> DataDict:
     # Image should be in shape of [C, H, W, D]
     DEVICE: str = str(data_dict["image"].device) if device is None else device
 
@@ -581,7 +582,7 @@ def background_transform_from_cfg(
     data_dict["image"] = image
     data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
     data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
-    data_dict["baked-skeleton"] = torch.zeros(
+    data_dict["baked_skeleton"] = torch.zeros(
         (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
     )
     data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
@@ -595,7 +596,7 @@ def merged_transform_3D(
     device: Optional[str] = None,
     bake_skeleton_anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
     smooth_skeleton_kernel_size: Tuple[int, int, int] = (3, 3, 1),
-) -> Dict[str, Tensor]:
+) -> DataDict:
     DEVICE: str = str(data_dict["image"].device) if device is None else device
 
     # Image should be in shape of [C, H, W, D]
@@ -860,7 +861,7 @@ def merged_transform_3D(
         average=True,
         device=DEVICE,
     )
-    data_dict["baked-skeleton"]: Union[Tensor, None] = baked
+    data_dict["baked_skeleton"]: Union[Tensor, None] = baked
 
     _, x, y, z = masks.shape
     data_dict["skele_masks"]: Tensor = skeleton_to_mask(
@@ -872,7 +873,7 @@ def merged_transform_3D(
 
 def background_transform_3D(
     data_dict: Dict[str, Tensor], device: Optional[str] = None
-) -> Dict[str, Tensor]:
+) -> DataDict:
     DEVICE: str = str(data_dict["image"].device) if device is None else device
 
     # Image should be in shape of [C, H, W, D]
@@ -1049,7 +1050,7 @@ def background_transform_3D(
     data_dict["image"] = image
     data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
     data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
-    data_dict["baked-skeleton"] = torch.zeros(
+    data_dict["baked_skeleton"] = torch.zeros(
         (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
     )
     data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)

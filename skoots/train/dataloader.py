@@ -1,3 +1,4 @@
+from __future__ import annotations
 import glob
 import os.path
 from typing import Dict
@@ -11,6 +12,7 @@ from torch.utils.data import Dataset
 
 # from skoots.train.merged_transform import get_centroids
 from tqdm import tqdm
+from skoots.lib.types import DataDict
 
 Transform = Callable[[Dict[str, Tensor]], Dict[str, Tensor]]
 
@@ -46,17 +48,17 @@ class dataset(Dataset):
         super(Dataset, self).__init__()
 
         # Reassigning variables
-        self.files = []
-        self.image = []
-        self.centroids = []
-        self.masks = []
-        self.skeletons = []
-        self.baked_skeleton = []
-        self.transforms = transforms
+        self.files: List[str] = []
+        self.image: List[Tensor] = []
+        self.centroids: List[Tensor] = []
+        self.masks: List[Tensor] = []
+        self.skeletons: List[Dict[int, Tensor]] = []
+        self.baked_skeleton: List[Tensor] = []
+        self.transforms: Callable[[DataDict], DataDict] = transforms
         self.device = device
         self.pad_size: List[int] = [pad_size, pad_size]
 
-        self.sample_per_image = sample_per_image
+        self.sample_per_image: int = sample_per_image
 
         # Store all possible directories containing data in a list
         path: List[str] = [path] if isinstance(path, str) else path
@@ -107,7 +109,7 @@ class dataset(Dataset):
                 if v.numel() == 0:
                     raise ValueError(f"{f} instance label {k} has {v.numel()=}")
 
-            skeleton = {int(k): v for k, v in skeleton.items()}
+            skeleton: Dict[int, Tensor] = {int(k): v for k, v in skeleton.items()}
 
             for u in masks.unique():
                 if int(u) == 0:
@@ -120,22 +122,22 @@ class dataset(Dataset):
     def __len__(self) -> int:
         return len(self.image) * self.sample_per_image
 
-    def __getitem__(self, item: int) -> Dict[str, Tensor]:
+    def __getitem__(self, item: int) -> DataDict:
         # We might artificially want to sample more times per image
         # Usefull when larging super large images with a lot of data.
         item = item // self.sample_per_image
 
         with torch.no_grad():
-            data_dict = {
+            data_dict: DataDict = {
                 "image": self.image[item],
                 "masks": self.masks[item],
                 "skeletons": self.skeletons[item],
-                "baked-skeleton": self.baked_skeleton[item],
+                "baked_skeleton": self.baked_skeleton[item],
             }
 
             # Transformation pipeline
             with torch.no_grad():
-                data_dict = self.transforms(data_dict)  # Apply transforms
+                data_dict: DataDict = self.transforms(data_dict)  # Apply transforms
 
         for k in data_dict:
             if isinstance(data_dict[k], torch.Tensor):
@@ -162,18 +164,18 @@ class dataset(Dataset):
 
         return self
 
-    def cuda(self):
+    def cuda(self) -> dataset:
         """alias for self.to('cuda:0')"""
         self.to("cuda:0")
         return self
 
-    def cpu(self):
+    def cpu(self) -> dataset:
         """alias for self.to('cpu')"""
         self.to("cuda:0")
         self.to("cpu")
         return self
 
-    def pin_memory(self):
+    def pin_memory(self) -> dataset:
         """
         Pins underlying memory allowing faster transfer to GPU
         """
@@ -268,7 +270,7 @@ class BackgroundDataset(Dataset):
                 "image": self.image[item],
                 "masks": torch.empty((1)),
                 "skeletons": {-1: torch.empty((1))},
-                "baked-skeleton": None,
+                "baked_skeleton": None,
             }
 
             # Transformation pipeline
@@ -352,10 +354,10 @@ class MultiDataset(Dataset):
             # range(len(ds)) necessary to not index whole dataset at start. SLOW!!!
             self._mapped_indicies.extend([i for _ in range(len(ds))])
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._mapped_indicies)
 
-    def __getitem__(self, item):
+    def __getitem__(self, item: int) -> DataDict:
         i = self._mapped_indicies[item]  # Get the ind for the dataset
         _offset = sum(self._dataset_lengths[:i])  # Ind offset
         try:
@@ -364,7 +366,7 @@ class MultiDataset(Dataset):
             print(i, _offset, item - _offset, item, len(self.datasets[i]))
             raise RuntimeError
 
-    def to(self, device: str):
+    def to(self, device: str) -> MultiDataset:
         """
         Sends all data stored in the dataloader to a device. Occurs for ALL wrapped datasets.
 
@@ -375,13 +377,13 @@ class MultiDataset(Dataset):
             self.datasets[i].to(device)
         return self
 
-    def cuda(self):
+    def cuda(self) -> MultiDataset:
         """alias for self.to('cuda:0')"""
         for i in range(self.num_datasets):
             self.datasets[i].to("cuda:0")
         return self
 
-    def cpu(self):
+    def cpu(self) -> MultiDataset:
         """alias for self.to('cpu')"""
         for i in range(self.num_datasets):
             self.datasets[i].to("cpu")
@@ -394,7 +396,7 @@ def skeleton_colate(
 ) -> Tuple[Tensor, Tensor, List[Dict[str, Tensor]], Tensor, Tensor]:
     """
     Colate function with defines how we batch training data.
-    Unpacks a data_dict with keys: 'image', 'masks', 'skele_masks', 'baked-skeleton', 'skeleton'
+    Unpacks a data_dict with keys: 'image', 'masks', 'skele_masks', 'baked_skeleton', 'skeleton'
     and puts them each into a Tensor. This should not be called outright, rather passed to a
     torch.DataLoader for automatic batching.
 
@@ -404,7 +406,7 @@ def skeleton_colate(
     images = torch.stack([dd.pop("image") for dd in data_dict], dim=0)
     masks = torch.stack([dd.pop("masks") for dd in data_dict], dim=0)
     skele_masks = torch.stack([dd.pop("skele_masks") for dd in data_dict], dim=0)
-    baked = [dd.pop("baked-skeleton") for dd in data_dict]
+    baked = [dd.pop("baked_skeleton") for dd in data_dict]
 
     if baked[0] is not None:
         baked = torch.stack(baked, dim=0)
