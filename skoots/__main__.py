@@ -44,6 +44,11 @@ def main():
     accessory_args.add_argument(
         "--skeletonize-train-data", help="calculate skeletons of training data"
     )
+
+    accessory_args.add_argument(
+        "--mask-filter", default='.labels', help="filter of mask file"
+    )
+
     accessory_args.add_argument(
         "--downscaleXY",
         type=float,
@@ -75,6 +80,9 @@ def main():
             f"Cannot evaluate SKOOTS wihtout pretrained model. "
             f"--pretrained_checkpoint must not be None"
         )
+        if args.pretrained_checkpoint == 'base':
+            args.pretrained_checkpoint = "/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/models/mito/Mar28_16-26-14_CHRISUBUNTU.trch"
+
         if os.path.isdir(args.image):
             files = glob.glob(args.image + "/*.tif")
             files.sort()

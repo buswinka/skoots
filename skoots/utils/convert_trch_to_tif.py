@@ -11,6 +11,9 @@ from torch import Tensor
 def convert(base_dir):
     if os.path.isdir(base_dir) and not base_dir.endswith(".zarr"):
         files = glob.glob(os.path.join(base_dir, "*.trch"))
+
+    elif '*' in base_dir:
+        files = glob.glob(base_dir)
     else:
         files = [base_dir]
     print("Found the following files to convert:")

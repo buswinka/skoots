@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from skimage.morphology import skeletonize
 from torch import Tensor
 from tqdm import tqdm
+import numpy as np
+import skimage.io as io
+import glob
 
 
 def save_train_test_split(
@@ -70,26 +73,34 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
 
     x, y, z = mask.shape
 
-    large_mask = (
-        F.interpolate(
-            mask.unsqueeze(0).unsqueeze(0).float(),
-            size=torch.tensor([x, y, z]).mul(scale).float().round().int().tolist(),
-            mode="nearest",
+    if scale.sum() != 3:
+        print(scale, x, y, z)
+
+        large_mask = (
+            F.interpolate(
+                mask.unsqueeze(0).unsqueeze(0).float(),
+                size=torch.tensor([x, y, z]).mul(scale).float().round().int().tolist(),
+                mode="nearest",
+            )
+            .squeeze()
+            .cuda()
+            .int()
         )
-        .squeeze()
-        .cuda()
-        .int()
-    )
+    else:
+        large_mask = mask.clone()
+
+    large_mask_unique = large_mask.unique().tolist()
+    unique_list = unique.tolist()
 
     for u in unique:
-        assert u in large_mask.unique().tolist(), u
+        assert u in large_mask_unique, 'Downscaled too much!'
 
-    for u in large_mask.unique().tolist():
-        assert u in unique.tolist(), u
+    for u in large_mask_unique:
+        assert u in unique_list, 'Downscaled too much!'
 
-    assert torch.allclose(
-        unique.cuda(), torch.unique(large_mask)
-    ), f"{unique=}, {large_mask.unique()=}"
+    # assert torch.allclose(
+    #     unique.cuda(), torch.unique(large_mask)
+    # ), f"{unique=}, {large_mask.unique()=}"
 
     # large_mask = mask
 
@@ -149,10 +160,13 @@ def create_gt_skeletons(base_dir, mask_filter, scale: Tuple[float, float, float]
     files = glob.glob(os.path.join(base_dir, f"*{mask_filter}.tif"))
     files = [b[:-11:] for b in files]
 
+    scale = torch.tensor(scale)
+
     for f in files:
-        mask = io.imread(f)
+        mask = io.imread(f + f"{mask_filter}.tif")
         mask = torch.from_numpy(mask.astype(np.int32))
         mask = mask.permute((1, 2, 0))
+
 
         try:
             output = calculate_skeletons(mask, scale)

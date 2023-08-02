@@ -83,18 +83,16 @@ class dice(nn.Module):
 
 
 class tversky(nn.Module):
-    def __init__(self, alpha, beta, eps):
+    def __init__(self, alpha: float, beta: float, eps: float):
         """
         Returns dice index of two torch.Tensors
 
-        :param smooth: float
-                - Very small number to ensure numerical stability. Default 1e-10
         :param alpha: float
                 - Value which penalizes False Positive Values
         :param beta: float
                 - Value which penalizes False Negatives
-        :param gamma: float
-                - Focal loss term
+        :param eps: float
+                - Numerical stability term
         """
         super(tversky, self).__init__()
 
