@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from skimage.morphology import skeletonize
 from torch import Tensor
 from tqdm import tqdm
+import kimimaro
 import numpy as np
 import skimage.io as io
 import glob
@@ -68,7 +69,7 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
     :param mask: [C, X, Y, Z]
     :return: Dict[int, Tensor] dict of masks where int is the object id and Tensor is [3, K] skeletons
     """
-
+    # raise DeprecationWarning('This function is slow and should no longer be used...')
     unique = torch.unique(mask)
 
     x, y, z = mask.shape
@@ -83,7 +84,7 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
                 mode="nearest",
             )
             .squeeze()
-            .cuda()
+            # .cuda()
             .int()
         )
     else:
@@ -156,6 +157,33 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
     return output
 
 
+def _calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
+    """
+
+    image of shape [X, Y, Z,] with int masks
+    returns dict[int, Tensor]
+
+    :param mask:
+    :param scale:
+    :return:
+    """
+
+    skels = kimimaro.skeletonize(
+        mask.numpy(),
+        anisotropy=scale,
+        progress=True,
+        dust_threshold=0,
+        fill_holes=False,
+        fix_avocados=False,
+        parallel=0
+    )
+    print('test1234')
+    skels = {k:torch.from_numpy(v.vertices).div(torch.tensor(scale)).round().long() for k, v in skels.items()}
+
+
+    return skels
+
+
 def create_gt_skeletons(base_dir, mask_filter, scale: Tuple[float, float, float]):
     files = glob.glob(os.path.join(base_dir, f"*{mask_filter}.tif"))
     files = [b[:-11:] for b in files]
@@ -163,23 +191,20 @@ def create_gt_skeletons(base_dir, mask_filter, scale: Tuple[float, float, float]
     scale = torch.tensor(scale)
 
     for f in files:
+        print('attempting to skeletonize ', f+f"{mask_filter}.tif" )
         mask = io.imread(f + f"{mask_filter}.tif")
         mask = torch.from_numpy(mask.astype(np.int32))
         mask = mask.permute((1, 2, 0))
 
-
-        try:
-            output = calculate_skeletons(mask, scale)
-        except:
-            raise ValueError(f"ERROR: {f}")
+        output = calculate_skeletons(mask, scale)
 
         for u in mask.unique():
             if u == 0:
                 continue
             assert int(u) in output, f"{f}, {u}, {output.keys()=}"
 
-        torch.save(output, f[: -(len(mask_filter) + 4)] + ".skeletons.trch")
-        print("SAVED", f[: -(len(mask_filter) + 4)] + ".skeletons.trch")
+        torch.save(output, f + ".skeletons.trch")
+        print("SAVED", f + ".skeletons.trch")
 
 
 if __name__ == "__main__":
@@ -193,30 +218,43 @@ if __name__ == "__main__":
     To do this, we take the index of each point, find the skeleton point closest to it, andreplace it
     """
 
-    bases = [
-        # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/train/',
-        "/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/toBeSkeletonized/",
-    ]
-    if not torch.cuda.is_available():
-        raise RuntimeError("NO CUDA")
+    image = io.imread('/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/mitochondria/train/external/kasthuri.labels.tif')
+    image = torch.from_numpy(image.transpose((1, 2, 0)))
+    skels = calculate_skeletons(image, (1, 1, 7))
 
-    # Z_SCALE = 2
-    SCALE = torch.tensor([0.2, 0.2, 3])
-    # SCALE = torch.tensor([1,1,1])
+    skeletons = torch.zeros_like(image)
+    print(image.shape, skeletons.shape)
 
-    bases = glob.glob(bases[0] + "*.labels.tif")
-    bases = [b[:-11:] for b in bases]
+    for id, skel in skels.items():
+        print(skel.shape)
+        skeletons[skel[:,0].long(), skel[:,1].long(), skel[:,2].div(7).round().long()] = 1
 
-    for base in bases:
-        mask = io.imread(base + ".labels.tif")
-        mask = torch.from_numpy(mask.astype(np.int32))
+    io.imsave('/home/chris/Desktop/skeletons_test.tif', skeletons.permute((2, 0 ,1).numpy()))
 
-        mask = mask.permute((1, 2, 0))
-        x, y, z = mask.shape
-
-        output = calculate_skeletons(mask, SCALE)
-
-        torch.save(output, base + ".skeletons.trch")
-        print("SAVED", base + ".skeletons.trch")
-
-        save_train_test_split(mask, output, 150, base)
+    # bases = [
+    #     # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/train/',
+    #     "/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/toBeSkeletonized/",
+    # ]
+    # if not torch.cuda.is_available():
+    #     raise RuntimeError("NO CUDA")
+    #
+    # # Z_SCALE = 2
+    # SCALE = torch.tensor([0.2, 0.2, 3])
+    # # SCALE = torch.tensor([1,1,1])
+    #
+    # bases = glob.glob(bases[0] + "*.labels.tif")
+    # bases = [b[:-11:] for b in bases]
+    #
+    # for base in bases:
+    #     mask = io.imread(base + ".labels.tif")
+    #     mask = torch.from_numpy(mask.astype(np.int32))
+    #
+    #     mask = mask.permute((1, 2, 0))
+    #     x, y, z = mask.shape
+    #
+    #     output = calculate_skeletons(mask, SCALE)
+    #
+    #     torch.save(output, base + ".skeletons.trch")
+    #     print("SAVED", base + ".skeletons.trch")
+    #
+    #     save_train_test_split(mask, output, 150, base)

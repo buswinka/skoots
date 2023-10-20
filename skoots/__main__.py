@@ -50,13 +50,13 @@ def main():
     )
 
     accessory_args.add_argument(
-        "--downscaleXY",
+        "--anisotropyXY",
         type=float,
         default=1.0,
         help="calculate skeletons of training data",
     )
     accessory_args.add_argument(
-        "--downscaleZ",
+        "--anisotropyZ",
         type=float,
         default=1.0,
         help="calculate skeletons of training data",
@@ -93,7 +93,7 @@ def main():
 
     # accessory scripts
     if args.skeletonize_train_data:
-        downscale = (args.downscaleXY, args.downscaleXY, args.downscaleZ)
+        downscale = (args.anisotropyXY, args.anisotropyXY, args.anisotropyZ)
         skoots.train.generate_skeletons.create_gt_skeletons(
             args.skeletonize_train_data, args.mask_filter, downscale
         )

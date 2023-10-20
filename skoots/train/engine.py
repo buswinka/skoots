@@ -4,18 +4,11 @@ from functools import partial
 from statistics import mean
 from typing import Callable, Union, Dict
 
+import skoots.train.loss
 import torch
 import torch.nn as nn
 import torch.optim.lr_scheduler
 import torch.optim.swa_utils
-from torch import Tensor
-from torch.cuda.amp import GradScaler, autocast
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import trange
-from yacs.config import CfgNode
-
-import skoots.train.loss
 from skoots.lib.embedding_to_prob import baked_embed_to_prob
 from skoots.lib.vector_to_embedding import vector_to_embedding
 from skoots.train.dataloader import dataset, MultiDataset, skeleton_colate
@@ -26,6 +19,13 @@ from skoots.train.merged_transform import (
 from skoots.train.setup import setup_process
 from skoots.train.sigma import Sigma, init_sigma
 from skoots.train.utils import write_progress
+from torch import Tensor
+from torch import profiler
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import trange
+from yacs.config import CfgNode
 
 Dataset = Union[Dataset, DataLoader]
 
@@ -62,8 +62,9 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
     if int(torch.__version__[0]) >= 2:
         print("Comiled with Inductor")
         model = torch.compile(base_model)
-    else:
-        model = torch.jit.script(base_model)
+    # else:
+    # model = torch.jit.script(base_model)
+    # model = base_model
 
     augmentations: Callable[[Dict[str, Tensor]], Dict[str, Tensor]] = partial(
         transform_from_cfg, cfg=cfg, device=device
@@ -72,9 +73,18 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
         [Dict[str, Tensor]], Dict[str, Tensor]
     ] = partial(background_transform_from_cfg, cfg=cfg, device=device)
     # Training Dataset - MultiDataset[Mitochondria, Background]
+
+    assert len(cfg.TRAIN.TRAIN_STORE_DATA_ON_GPU) == len(
+        cfg.TRAIN.TRAIN_DATA_DIR), 'must set identical length gpu storage argument'
+    assert len(cfg.TRAIN.VALIDATION_STORE_DATA_ON_GPU) == len(
+        cfg.TRAIN.VALIDATION_DATA_DIR), 'must set identical length gpu storage argument'
+    assert len(cfg.TRAIN.BACKGROUND_STORE_DATA_ON_GPU) == len(
+        cfg.TRAIN.BACKGROUND_DATA_DIR), 'must set identical length gpu storage argument'
+
     _datasets = []
-    for path, N in zip(cfg.TRAIN.TRAIN_DATA_DIR, cfg.TRAIN.TRAIN_SAMPLE_PER_IMAGE):
-        _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else "cpu"
+    for path, N, on_cuda in zip(cfg.TRAIN.TRAIN_DATA_DIR, cfg.TRAIN.TRAIN_SAMPLE_PER_IMAGE,
+                                cfg.TRAIN.TRAIN_STORE_DATA_ON_GPU):
+        _device = device if on_cuda else 'cpu'
         _datasets.append(
             dataset(
                 path=path,
@@ -87,10 +97,10 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
             .to(_device)
         )
 
-    for path, N in zip(
-        cfg.TRAIN.BACKGROUND_DATA_DIR, cfg.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE
+    for path, N, on_cuda in zip(
+            cfg.TRAIN.BACKGROUND_DATA_DIR, cfg.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE, cfg.TRAIN.BACKGROUND_STORE_DATA_ON_GPU
     ):
-        _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else "cpu"
+        _device = device if on_cuda else 'cpu'
         _datasets.append(
             dataset(
                 path=path,
@@ -117,10 +127,10 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
 
     # Validation Dataset
     _datasets = []
-    for path, N in zip(
-        cfg.TRAIN.VALIDATION_DATA_DIR, cfg.TRAIN.VALIDATION_SAMPLE_PER_IMAGE
+    for path, N, on_cuda in zip(
+            cfg.TRAIN.VALIDATION_DATA_DIR, cfg.TRAIN.VALIDATION_SAMPLE_PER_IMAGE, cfg.TRAIN.VALIDATION_STORE_DATA_ON_GPU
     ):
-        _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else "cpu"
+        _device = device if on_cuda else 'cpu'
         _datasets.append(
             dataset(
                 path=path,
@@ -137,6 +147,7 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
     test_sampler = torch.utils.data.distributed.DistributedSampler(merged_validation)
     if _datasets or cfg.TRAIN.VALIDATION_BATCH_SIZE >= 1:
         _n_workers = 0  # if _device != 'cpu' else 2
+        _device = device if cfg.TRAIN.STORE_DATA_ON_GPU else "cpu"
         valdiation_dataloader = DataLoader(
             merged_validation,
             num_workers=_n_workers,
@@ -164,11 +175,16 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
 
     vector_scale = torch.tensor(cfg.SKOOTS.VECTOR_SCALING, device=device)
 
+    kwargs = {k:v for k, v in zip(cfg.TRAIN.OPTIMIZER_KEYWORD_ARGUMENTS, cfg.TRAIN.OPTIMIZER_KEYWORD_VALUES)}
     optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](
         model.parameters(),
         lr=cfg.TRAIN.LEARNING_RATE,
-        weight_decay=cfg.TRAIN.WEIGHT_DECAY,
+        weight_decay=cfg.TRAIN.WEIGHT_DECAY, **kwargs
     )
+
+    checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH[0])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
     scheduler = _valid_lr_schedulers[cfg.TRAIN.SCHEDULER](
         optimizer, T_0=cfg.TRAIN.SCHEDULER_T0
     )
@@ -241,9 +257,9 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
             )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
             loss = (
-                (cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT * _loss_embed)
-                + (cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT * _loss_prob)
-                + (cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT * _loss_skeleton)
+                    (cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT * _loss_embed)
+                    + (cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT * _loss_prob)
+                    + (cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT * _loss_skeleton)
             )
 
             warmup_range.desc = f"{loss.item()}"
@@ -294,21 +310,21 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
 
                 # fuck this small amount of code.
                 loss = (
-                    (
-                        cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
-                        * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
-                        * _loss_embed
-                    )
-                    + (
-                        cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
-                        * (1 if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH else 0)
-                        * _loss_prob
-                    )
-                    + (
-                        cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
-                        * (1 if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH else 0)
-                        * _loss_skeleton
-                    )
+                        (
+                                cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
+                                * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
+                                * _loss_embed
+                        )
+                        + (
+                                cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
+                                * (1 if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH else 0)
+                                * _loss_prob
+                        )
+                        + (
+                                cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
+                                * (1 if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH else 0)
+                                * _loss_skeleton
+                        )
                 )
 
                 if torch.isnan(loss):
@@ -419,8 +435,8 @@ def train(rank: str, port: str, world_size: int, base_model: nn.Module, cfg: Cfg
 
         if rank == 0:
             epoch_range.desc = (
-                f"lr={scheduler.get_last_lr()[-1]:.3e}, Loss (train | val): "
-                + f"{avg_epoch_loss[-1]:.5f} | {avg_val_loss[-1]:.5f}"
+                    f"lr={scheduler.get_last_lr()[-1]:.3e}, Loss (train | val): "
+                    + f"{avg_epoch_loss[-1]:.5f} | {avg_val_loss[-1]:.5f}"
             )
 
         state_dict = (

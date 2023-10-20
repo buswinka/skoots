@@ -96,9 +96,9 @@ class tversky(nn.Module):
         """
         super(tversky, self).__init__()
 
-        self.alpha = torch.tensor(alpha)
-        self.beta = torch.tensor(beta)
-        self.eps = torch.tensor(eps)
+        self.alpha = torch.tensor(float(alpha))
+        self.beta = torch.tensor(float(beta))
+        self.eps = torch.tensor(float(eps))
 
     def forward(
         self, predicted: Union[Tensor, List[Tensor]], ground_truth: Tensor

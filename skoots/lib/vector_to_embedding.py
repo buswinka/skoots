@@ -208,11 +208,14 @@ def vec2embedND(scale, vector):
 
 
 if __name__ == "__main__":
-    vector = torch.ones((1, 3, 10, 10, 10))
-    vector[:, 0, ...] = -1
-    vector[:, 1, ...] = -1
-    vector[:, 2, ...] = -1
+    vector = torch.ones((1, 3, 10, 10, 10)).float()
+    vector[:, 0, 5, 5, 5] = -1
+    vector[:, 1, 5, 5, 5] = -1
+    vector[:, 2, 5, 5, 5] = -1
 
-    out = vector_to_embedding(torch.tensor((1, 1, 1)), vector, N=4)
+    vector[:, [0,1,2], 4, 4, 4] = torch.tensor((2, 2, 2)).float()
 
-    print(f"{out[0, :, 3, 3, 3]=}")
+
+    out = vector_to_embedding(torch.tensor((1, 1, 1)), vector, N=2)
+
+    print(f"{out[0, :, 5, 5, 5]=}") # should equal 6 6 6
