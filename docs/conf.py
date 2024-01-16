@@ -12,7 +12,7 @@ os.environ['PYTORCH_JIT']='0'
 project = "skoots"
 copyright = "2023, Chris Buswinka"
 author = "Chris Buswinka"
-release = "0.0.1"
+release = "0.0.4"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -39,6 +39,7 @@ extensions = [
     "sphinx_design",
     "sphinx_inline_tabs",
 ]
+
 
 myst_enable_extensions = [
     "amsmath",
@@ -141,5 +142,9 @@ html_theme_options = {
     "top_of_page_button": "edit",
     "dark_css_variables": colordict,
 }
+
+html_css_files = [
+    'custom.css',
+]
 
 html_logo = "../resources/skooting_in_progress.png"

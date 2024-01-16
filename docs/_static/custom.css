@@ -26,6 +26,40 @@ h2{
   color: var(--color-brand-content,#00ff00)
 } */
 
+.admonition.skoots-note{
+  border-color: #e7a316;
+}
+.admonition.skoots-note> .admonition-title {
+    text-align: center;
+    background-color: rgba(0,0,0,0);
+    /*margin-top: -1em;*/
+    /*margin-bottom: -1em;*/
+
+}
+.admonition.skoots-note> .admonition-title::before {
+  background-color: rgba(43, 155, 70, 0);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.admonition.skoots-warning{
+  border-color: #e72333;
+}
+.admonition.skoots-warning> .admonition-title {
+    text-align: center;
+    background-color: rgba(0,0,0,0);
+    /*margin-top: -1em;*/
+    /*margin-bottom: -1em;*/
+
+}
+.admonition.skoots-warning> .admonition-title::before {
+  background-color: rgba(43, 155, 70, 0);
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+
+
 a:link {
     color: var(--sinebow23);
     /* text-decoration: underline; */
