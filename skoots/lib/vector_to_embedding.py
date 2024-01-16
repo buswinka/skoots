@@ -101,12 +101,17 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     mesh: List[Tensor] = [m.unsqueeze(0).unsqueeze(0) for m in mesh]
     mesh: Tensor = torch.cat(mesh, dim=1)
 
-    vector = vector.mul(num.view(newshape))
+    scaled_vector = vector.mul(num.view(newshape))
+    mesh = mesh + scaled_vector
 
-    mesh = mesh + vector
-
+    scale = 1.0
     for _ in range(n - 1):  # Only executes if n > 1
         # convert to index.
+
+        scale *= 1.0
+
+        scaled_vector = vector.mul(scale * num.view(newshape))
+
         index = mesh.round()
         b, c, x, y, z = index.shape
         for i, k in enumerate([x, y, z]):
@@ -121,7 +126,7 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
         index = index.clamp(0, x * y * z - 1).long()
 
         for i in range(c):
-            mesh[:, [i], ...] = mesh[:, [i], ...] + vector[:, [i], ...].take(index)
+            mesh[:, [i], ...] = mesh[:, [i], ...] + scaled_vector[:, [i], ...].take(index)
 
     return mesh
 

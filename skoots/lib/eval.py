@@ -155,64 +155,66 @@ def eval(
     #     vectors = vectors[:, ...]
 
     del image  # we don't need the image anymore
-    logging.info(f"Saving intermediate outputs")
 
     # torch.save(vectors, filename_without_extensions + '_vectors.trch')
     # torch.save(skeleton, filename_without_extensions + '_unlabeled_skeletons.trch')
 
-    io.imsave(
-        filename_without_extensions + f"_skoots_vectors.tif",
-        vectors.mul(127)
-        .add(127)
-        .int()
-        .cpu()
-        .numpy()
-        .transpose(3, 1, 2, 0)
-        .astype(np.uint16),
-        compression="zlib",
-    )
-    io.imsave(
-        filename_without_extensions + f"_unlabeled_skeletons.tif",
-        skeleton.mul(255)
-        .squeeze(0)
-        .clamp(0, 255)
-        .int()
-        .cpu()
-        .numpy()
-        .transpose(2, 0, 1)
-        .astype(np.uint8),
-        compression="zlib",
-    )
-
-    # zarr.save_array(
-    #     filename_without_extensions + f"_skoots_vectors.zarr",
-    #     vectors.mul(127).add(127).int().cpu().numpy(),
+    # logging.info(f"Saving vector output")
+    # io.imsave(
+    #     filename_without_extensions + f"_skoots_vectors.tif",
+    #     vectors.mul(127)
+    #     .add(127)
+    #     .int()
+    #     .cpu()
+    #     .numpy()
+    #     .transpose(3, 1, 2, 0)
+    #     .astype(np.uint16),
+    #     compression="zlib",
     # )
     #
-    # zarr.save_array(
-    #     filename_without_extensions + f"_skoots_skeleton_unlabeled.zarr",
-    #     skeleton.cpu().numpy(),
+    # logging.info(f"Saving unlabeledc skeleton output")
+    # io.imsave(
+    #     filename_without_extensions + f"_unlabeled_skeletons.tif",
+    #     skeleton.mul(255)
+    #     .squeeze(0)
+    #     .clamp(0, 255)
+    #     .int()
+    #     .cpu()
+    #     .numpy()
+    #     .transpose(2, 0, 1)
+    #     .astype(np.uint8),
+    #     compression="zlib",
     # )
+
+    zarr.save_array(
+        filename_without_extensions + f"_skoots_vectors.zarr",
+        vectors.mul(127).add(127).int().cpu().numpy(),
+    )
+
+    zarr.save_array(
+        filename_without_extensions + f"_skoots_skeleton_unlabeled.zarr",
+        skeleton.cpu().numpy(),
+    )
 
     logging.info(f"Performing an flood fill on skeletons")
     skeleton: Tensor = efficient_flood_fill(skeleton.to(torch.int16))
 
-    io.imsave(
-        filename_without_extensions + f"_skeletons.tif",
-        skeleton
-        .squeeze(0)
-        .clamp(0, 255)
-        .int()
-        .cpu()
-        .numpy()
-        .transpose(2, 0, 1)
-        .astype(np.uint16),
-        compression="zlib",
-    )
-
-    # zarr.save_array(
-    #     filename_without_extensions + f"_skoots_skeleton.zarr", skeleton.cpu().numpy()
+    # io.imsave(
+    #     filename_without_extensions + f"_skeletons.tif",
+    #     skeleton
+    #     .squeeze(0)
+    #     .clamp(0, 255)
+    #     .int()
+    #     .cpu()
+    #     .numpy()
+    #     .transpose(2, 0, 1)
+    #     .astype(np.uint16),
+    #     compression="zlib",
     # )
+
+    zarr.save_array(
+        filename_without_extensions + f"_skoots_skeleton.zarr", skeleton.cpu().numpy()
+    )
 
     logging.info(f"Saving labeled skeletons")
     # torch.save(skeleton, filename_without_extensions + '_skeletons.trch')
@@ -244,7 +246,7 @@ def eval(
         )
 
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(
-            scale=vector_scale, vector=_vec, N=5
+            scale=vector_scale, vector=_vec, N=1
         )
         _embed += torch.tensor((x, y, z)).view(
             1, 3, 1, 1, 1
