@@ -35,7 +35,7 @@ def main():
     cfg = load_cfg_from_file(args)
     model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
 
-    if os.path.exists(cfg.TRAIN.PRETRAINED_MODEL_PATH[0]):
+    if cfg.TRAIN.PRETRAINED_MODEL_PATH and os.path.exists(cfg.TRAIN.PRETRAINED_MODEL_PATH[0]):
         checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH[0])
         state_dict = (
             checkpoint

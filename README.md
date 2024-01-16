@@ -8,13 +8,12 @@ SKeletOn ObjecT Segmentation - 2D/3D instance segmentation of arbitrary biomedic
 ## <img src="resources/installation.png" align="center" width="150px"/>
 
 <!-- start installation -->
-To install, make sure pyTorch is installed with CUDA support.
+To install, make sure pyTorch 2.1 is installed with CUDA support.
 
 ```bash
 pip install skoots
 ```
 
 Documentation: skoots.readthedocs.io
-
-BioRxiv: soon...
+BioRxiv: https://www.biorxiv.org/content/10.1101/2023.05.05.539611v1
 
