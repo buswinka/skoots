@@ -1,10 +1,16 @@
 import setuptools
+from wheel import __version__ as wheel_version
+from wheel.bdist_wheel import bdist_wheel
+from setuptools.command.build_py import build_py
+import glob
+
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
 with open("requirements.txt", "r") as fh:
     requires = fh.read()
+
 
 setuptools.setup(
     description="SKeletOn ObjecT Segmentation (SKOOTS)",
