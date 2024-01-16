@@ -9,6 +9,7 @@ from skoots.config import get_cfg_defaults
 from skoots.lib.mp_utils import find_free_port
 from skoots.lib.utils import cfg_to_bism_model
 from skoots.train.engine import train
+import warnings
 
 torch.set_float32_matmul_precision("high")
 
@@ -34,7 +35,7 @@ def main():
     cfg = load_cfg_from_file(args)
     model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
 
-    if cfg.TRAIN.PRETRAINED_MODEL_PATH:
+    if os.path.exists(cfg.TRAIN.PRETRAINED_MODEL_PATH[0]):
         checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH[0])
         state_dict = (
             checkpoint
@@ -42,6 +43,8 @@ def main():
             else checkpoint["model_state_dict"]
         )
         model.load_state_dict(state_dict)
+    else:
+        warnings.warn(f'Could not find file at path: {cfg.TRAIN.PRETRAINED_MODEL_PATH[0]}. Model has not been loaded.')
 
     port = find_free_port()
     world_size = cfg.SYSTEM.NUM_GPUS if cfg.TRAIN.DISTRIBUTED else 1

@@ -11,7 +11,7 @@ from skoots.lib.skeleton import bake_skeleton, skeleton_to_mask
 from skoots.lib.types import DataDict
 from torch import Tensor
 from yacs.config import CfgNode
-
+import skimage.io as io
 
 def elastic_deform(
         image: Tensor,
@@ -353,11 +353,11 @@ def transform_from_cfg(
     AFFINE_YAW = torch.tensor(cfg.AUGMENTATION.AFFINE_YAW, device=DEVICE)
     AFFINE_SHEAR = torch.tensor(cfg.AUGMENTATION.AFFINE_SHEAR, device=DEVICE)
 
-    masks = torch.clone(data_dict["masks"])  # .to(DEVICE))
-    image = torch.clone(data_dict["image"])  #
+    masks = data_dict["masks"] # .to(DEVI
+    image = data_dict["image"]
     #
     skeletons = deepcopy(data_dict["skeletons"])
-    skeletons = {k: v.float().to(DEVICE) for k, v in skeletons.items()}
+    # skeletons = {k: v.float().to(DEVICE) for k, v in skeletons.items()}
 
     # ------------ Random Crop 1
     extra = 300
@@ -423,12 +423,12 @@ def transform_from_cfg(
             if not torch.any(unique == k):
                 skeletons.pop(k)
             else:
-                skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+                skeletons[k] = skeletons[k].to(DEVICE) - torch.tensor([x0, y0, z0], device=DEVICE)
 
     # --------------------------- elastic transform
-    image, masks, skeletons = elastic_deform(image.unsqueeze(0), masks.unsqueeze(0), skeletons)
-    image = image.squeeze(0)
-    masks = masks.squeeze(0)
+    # image, masks, skeletons = elastic_deform(image.unsqueeze(0), masks.unsqueeze(0), skeletons)
+    # image = image.squeeze(0)
+    # masks = masks.squeeze(0)
 
     # -------------------affine (Cant use baked skeletons)
     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
@@ -613,6 +613,8 @@ def transform_from_cfg(
         # kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE,
         # n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE,
     )
+
+    torch.save(data_dict, '/home/chris/Dropbox (Partners HealthCare)/transform_output.trch')
 
     return data_dict
 
@@ -800,6 +802,9 @@ def background_transform_from_cfg(
         (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
     )
     data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
+
+    torch.save(data_dict, '/home/chris/Dropbox (Partners HealthCare)/transform_output.trch')
+
 
     return data_dict
 
