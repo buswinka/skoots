@@ -28,6 +28,7 @@ h2{
 
 .admonition.skoots-note{
   border-color: #e7a316;
+    background-color: rgba(0,0,0,0);
 }
 .admonition.skoots-note> .admonition-title {
     text-align: center;
@@ -44,6 +45,7 @@ h2{
 
 .admonition.skoots-warning{
   border-color: #e72333;
+    background-color: rgba(0,0,0,0);
 }
 .admonition.skoots-warning> .admonition-title {
     text-align: center;
