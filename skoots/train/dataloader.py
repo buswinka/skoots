@@ -9,10 +9,11 @@ import skimage.io as io
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
+import logging
 
 # from skoots.train.merged_transform import get_centroids
 from tqdm import tqdm
-from skoots.lib.types import DataDict
+from skoots.lib.custom_types import DataDict
 
 Transform = Callable[[Dict[str, Tensor]], Dict[str, Tensor]]
 
@@ -69,6 +70,7 @@ class dataset(Dataset):
         for f in tqdm(self.files, desc="Loading Files: "):
             if os.path.exists(f[:-11:] + ".tif"):
                 image_path = f[:-11:] + ".tif"
+                logging.info(f'Loading Image: {image_path}')
             else:
                 raise FileNotFoundError(
                     f"Could not find file: {image_path[:-4:]} with extensions .tif"
@@ -354,9 +356,9 @@ class MultiDataset(Dataset):
         _offset = sum(self._dataset_lengths[:i])  # Ind offset
         try:
             return self.datasets[i][item - _offset]
-        except Exception:
+        except Exception as e:
             print(i, _offset, item - _offset, item, len(self.datasets[i]))
-            raise RuntimeError
+            raise e
 
     def to(self, device: str) -> MultiDataset:
         """

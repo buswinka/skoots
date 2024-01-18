@@ -1,17 +1,20 @@
 import math
+import random
 from copy import deepcopy
-from typing import Dict, Tuple, Union, List, Optional
+from typing import Dict, Tuple, Union, List, Optional, Callable
 
 import torch
 import torch.nn.functional as F
-import torchvision
+import torch.nn as nn
 import torchvision.transforms.functional as ttf
 from skoots.lib.morphology import binary_erosion
 from skoots.lib.skeleton import bake_skeleton, skeleton_to_mask
-from skoots.lib.types import DataDict
+
+from skoots.lib.custom_types import DataDict
 from torch import Tensor
 from yacs.config import CfgNode
-import skimage.io as io
+
+import logging
 
 def elastic_deform(
         image: Tensor,
@@ -48,11 +51,11 @@ def elastic_deform(
 
     # offset are the random directon vectors
     offset: Tensor = (
-            F.interpolate(
-                torch.rand((1, 3, 2, 2, 2), device=device), (x, y, z), mode="trilinear"
-            ).permute((0, 2, 3, 4, 1)).mul(
-                torch.tensor((0.05, 0.2, 0.2), device=device).view(1,1,1,1,3)
-            )
+        F.interpolate(
+            torch.rand((1, 3, 2, 2, 2), device=device), (x, y, z), mode="trilinear"
+        ).permute((0, 2, 3, 4, 1)).mul(
+            torch.tensor((0.05, 0.2, 0.2), device=device).view(1, 1, 1, 1, 3)
+        )
 
     )
 
@@ -323,124 +326,131 @@ def calc_centroid(mask: Tensor, id: int) -> Tensor:
     return center
 
 
-@torch.no_grad()
-# @torch.jit.ignore()
-def transform_from_cfg(
-        data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
-) -> DataDict:
-    DEVICE: str = str(data_dict["image"].device) if device is None else device
+class TransformFromCfg(nn.Module):
+    def __init__(self, cfg: CfgNode, device: torch.device, scale: float = 255.0):
+        super(TransformFromCfg, self).__init__()
+        """
+        Why? Apparently a huge amount of overhead is just initializing this from cfg
+        If we preinitalize, then we can save on overhead, to do this, we need a class...
+        Probably a reasonalbe functional way to do this. Ill think on it later
 
-    # Image should be in shape of [C, H, W, D]
-    CROP_WIDTH = torch.tensor(cfg.AUGMENTATION.CROP_WIDTH, device=DEVICE)
-    CROP_HEIGHT = torch.tensor(cfg.AUGMENTATION.CROP_HEIGHT, device=DEVICE)
-    CROP_DEPTH = torch.tensor(cfg.AUGMENTATION.CROP_DEPTH, device=DEVICE)
+        """
 
-    FLIP_RATE = torch.tensor(cfg.AUGMENTATION.FLIP_RATE, device=DEVICE)
+        self.prefix_function = self._identity
+        self.posfix_function = self._identity
 
-    BRIGHTNESS_RATE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RATE, device=DEVICE)
-    BRIGHTNESS_RANGE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RANGE, device=DEVICE)
+        self.dataset_mean = 0
+        self.dataset_std = 1
 
-    NOISE_GAMMA = torch.tensor(cfg.AUGMENTATION.NOISE_GAMMA, device=DEVICE)
-    NOISE_RATE = torch.tensor(cfg.AUGMENTATION.NOISE_RATE, device=DEVICE)
+        self.cfg = cfg
 
-    FILTER_RATE = torch.tensor(0.5, device=DEVICE)
+        self.DEVICE = device
+        self.SCALE = scale
 
-    CONTRAST_RATE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RATE, device=DEVICE)
-    CONTRAST_RANGE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RANGE, device=DEVICE)
+        self.CROP_WIDTH = cfg.AUGMENTATION.CROP_WIDTH
+        self.CROP_HEIGHT = cfg.AUGMENTATION.CROP_HEIGHT
 
-    AFFINE_RATE = torch.tensor(cfg.AUGMENTATION.AFFINE_RATE, device=DEVICE)
-    AFFINE_SCALE = torch.tensor(cfg.AUGMENTATION.AFFINE_SCALE, device=DEVICE)
-    AFFINE_YAW = torch.tensor(cfg.AUGMENTATION.AFFINE_YAW, device=DEVICE)
-    AFFINE_SHEAR = torch.tensor(cfg.AUGMENTATION.AFFINE_SHEAR, device=DEVICE)
+        self.CROP_DEPTH = cfg.AUGMENTATION.CROP_DEPTH
 
-    masks = data_dict["masks"] # .to(DEVI
-    image = data_dict["image"]
-    #
-    skeletons = deepcopy(data_dict["skeletons"])
-    # skeletons = {k: v.float().to(DEVICE) for k, v in skeletons.items()}
+        self.FLIP_RATE = cfg.AUGMENTATION.FLIP_RATE
 
-    # ------------ Random Crop 1
-    extra = 300
-    w = (
-        CROP_WIDTH + extra
-        if CROP_WIDTH + extra <= image.shape[1]
-        else torch.tensor(image.shape[1])
-    )
-    h = (
-        CROP_HEIGHT + extra
-        if CROP_HEIGHT + extra <= image.shape[2]
-        else torch.tensor(image.shape[2])
-    )
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+        self.BRIGHTNESS_RATE = cfg.AUGMENTATION.BRIGHTNESS_RATE
+        self.BRIGHTNESS_RANGE = cfg.AUGMENTATION.BRIGHTNESS_RANGE
+        self.NOISE_GAMMA = cfg.AUGMENTATION.NOISE_GAMMA
+        self.NOISE_RATE = cfg.AUGMENTATION.NOISE_RATE
 
-    # Randomly select a centroid to center in frame
-    ind: int = torch.randint(
-        len(skeletons.keys()), (1,), dtype=torch.long, device=DEVICE
-    ).item()
-    key: int = list(skeletons)[ind]
-    center: Tensor = skeletons[key].mean(0).squeeze()
+        self.FILTER_RATE = 0.5
 
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
+        self.CONTRAST_RATE = cfg.AUGMENTATION.CONTRAST_RATE
+        self.CONTRAST_RANGE = cfg.AUGMENTATION.CONTRAST_RANGE
 
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
+        self.AFFINE_RATE = cfg.AUGMENTATION.AFFINE_RATE
+        self.AFFINE_SCALE = cfg.AUGMENTATION.AFFINE_SCALE
+        self.AFFINE_SHEAR = cfg.AUGMENTATION.AFFINE_SHEAR
+        self.AFFINE_YAW = cfg.AUGMENTATION.AFFINE_YAW
 
-    image = (
-        image[:, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()]
-        .to(DEVICE)
-        .div(255)
-        .half()
-    )
+        self.BAKE_SKELETON_ANISOTROPY = cfg.AUGMENTATION.BAKE_SKELETON_ANISOTROPY
 
-    masks = masks[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ].to(DEVICE)
+        self._center = None
+        self._xyz = (None, None, None)
 
-    # Correct the skeleton positions
-    unique = torch.unique(masks)
-    if -1 not in skeletons:
-        keys = list(skeletons.keys())
-        for k in keys:
-            if not torch.any(unique == k):
-                skeletons.pop(k)
-            else:
-                skeletons[k] = skeletons[k].to(DEVICE) - torch.tensor([x0, y0, z0], device=DEVICE)
+    def _identity(self, *args):
+        return args if len(args) > 1 else args[0]
 
-    # --------------------------- elastic transform
-    # image, masks, skeletons = elastic_deform(image.unsqueeze(0), masks.unsqueeze(0), skeletons)
-    # image = image.squeeze(0)
-    # masks = masks.squeeze(0)
+    def _crop1(self, image, masks, skeletons):
+        # ------------ Random Crop 1
+        extra = 300
+        C, X, Y, Z = image.shape
+        # ------------ Random Crop 1
+        extra = 300
+        w = self.CROP_WIDTH + extra if self.CROP_WIDTH + extra <= X else X
+        h = self.CROP_HEIGHT + extra if self.CROP_HEIGHT + extra <= Y else Y
+        d = self.CROP_DEPTH if self.CROP_DEPTH <= Z else Z
 
-    # -------------------affine (Cant use baked skeletons)
-    if torch.rand(1, device=DEVICE) < AFFINE_RATE:
-        angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_YAW[0]
-        shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SHEAR[0]
-        scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SCALE[0]
+        key = random.choice(list(skeletons.keys()))
+        self._center: Tensor = skeletons[key].float().mean(0).squeeze()
+
+        # Center that instance
+        x0 = (
+            self._center[0]
+            .sub(w // 2)
+            .long()
+            .clamp(min=0, max=image.shape[1] - w)
+        )
+        y0 = (
+            self._center[1]
+            .sub(h // 2)
+            .long()
+            .clamp(min=0, max=image.shape[2] - h)
+        )
+        z0 = (
+            self._center[2]
+            .sub(d // 2)
+            .long()
+            .clamp(min=0, max=image.shape[3] - d)
+        )
+
+        self._xyz = (x0, y0, z0)
+
+        x1 = x0 + w
+        y1 = y0 + h
+        z1 = z0 + d
+
+        image = image[:, x0: x1, y0: y1, z0: z1]
+        masks = masks[:, x0: x1, y0: y1, z0: z1]
+
+        # Correct the skeleton positions
+        unique = torch.unique(masks)
+        if -1 not in skeletons:
+            keys = list(skeletons.keys())
+            for k in keys:
+                if not torch.any(unique == k):
+                    skeletons.pop(k)
+                else:
+                    skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=self.DEVICE)
+
+        # send to device
+        if image.device != self.DEVICE:
+            image = image.to(self.DEVICE)
+
+        if masks.device != self.DEVICE:
+            masks = masks.to(self.DEVICE)
+
+        for k, v in skeletons.items():
+            skeletons[k] = v.float().to(self.DEVICE)
+
+        return image, masks, skeletons
+
+    def _affine(self, image, masks, skeletons):
+        angle = (self.AFFINE_YAW[1] - self.AFFINE_YAW[0]) * torch.rand(
+            1, device=self.DEVICE
+        ) + self.AFFINE_YAW[0]
+        shear = (self.AFFINE_SHEAR[1] - self.AFFINE_SHEAR[0]) * torch.rand(
+            1, device=self.DEVICE
+        ) + self.AFFINE_SHEAR[0]
+        scale = (self.AFFINE_SCALE[1] - self.AFFINE_SCALE[0]) * torch.rand(
+            1, device=self.DEVICE
+        ) + self.AFFINE_SCALE[0]
 
         # shear = torch.tensor((35), device=DEVICE)
         # angle = torch.tensor((45), device=DEVICE)
@@ -458,7 +468,7 @@ def transform_from_cfg(
         for k, v in skeletons.items():
             skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
             _ones = torch.ones(
-                (1, 1, skeleton_xy.shape[-1]), device=DEVICE
+                (1, 1, skeleton_xy.shape[-1]), device=self.DEVICE
             )  # [1, 1, N]
             skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
             rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
@@ -490,57 +500,95 @@ def transform_from_cfg(
             k: v for k, v in skeletons.items() if torch.any(unique_after.eq(k - 1))
         }
 
-        # assert len(skeletons.keys()) > 0, f"{unique_after=}, {unique_before=}"
+        return image, masks, skeletons
+        # angle = random.uniform(*self.AFFINE_YAW)
+        # shear = random.uniform(*self.AFFINE_YAW)
+        # scale = random.uniform(*self.AFFINE_SCALE)
+        #
+        # mat: Tensor = _get_affine_matrix(
+        #     center=[image.shape[1] / 2, image.shape[2] / 2],
+        #     angle=-angle,
+        #     translate=[0.0, 0.0],
+        #     scale=scale,
+        #     shear=[0.0, shear],
+        #     device=str(image.device),
+        # )  # Rotate the skeletons by the affine matrix
+        #
+        # if -1 not in skeletons:
+        #     for k, v in skeletons.items():
+        #         skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
+        #         _ones = torch.ones((1, 1, skeleton_xy.shape[-1]), device=self.DEVICE)  # [1, 1, N]
+        #         skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
+        #         rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
+        #         skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
+        #
+        # image = ttf.affine(
+        #     image.permute(0, 3, 1, 2).float(),
+        #     angle=angle,
+        #     shear=[float(shear)],
+        #     scale=scale,
+        #     translate=[0, 0],
+        # ).permute(0, 2, 3, 1)
+        #
+        # masks = ttf.affine(
+        #     masks.permute(0, 3, 1, 2).float(),
+        #     angle=angle,
+        #     shear=[float(shear)],
+        #     scale=scale,
+        #     translate=[0, 0],
+        # ).permute(0, 2, 3, 1)
+        #
+        # return image, masks, skeletons
 
-    # # ------------ Center Crop 2
-    w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
-    h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+    def _crop2(self, image, masks, skeletons):
+        C, X, Y, Z = image.shape
+        w = self.CROP_WIDTH if self.CROP_WIDTH < X else X
+        h = self.CROP_HEIGHT if self.CROP_HEIGHT < Y else Y
+        d = self.CROP_DEPTH if self.CROP_DEPTH < Z else Z
 
-    center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+        x0, y0, z0 = self._xyz
 
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
+        self._center = self._center - torch.tensor([x0, y0, z0], device=self.DEVICE)
 
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
+        # Center that instance
+        x0 = (
+            self._center[0]
+            .sub(w // 2)
+            .long()
+            .clamp(min=0, max=image.shape[1] - w)
+        )
+        y0 = (
+            self._center[1]
+            .sub(h // 2)
+            .long()
+            .clamp(min=0, max=image.shape[2] - h)
+        )
+        z0 = (
+            self._center[2]
+            .sub(d // 2)
+            .long()
+            .clamp(min=0, max=image.shape[3] - d)
+        )
 
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
-    masks = masks[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
+        x1 = x0 + w
+        y1 = y0 + h
+        z1 = z0 + d
 
-    unique = torch.unique(masks)
-    if -1 not in skeletons:
-        keys = list(skeletons.keys())
-        for k in keys:
-            if not torch.any(unique == k):
-                skeletons.pop(k)
-            else:
-                skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+        image = image[:, x0:x1, y0:y1, z0:z1]
+        masks = masks[:, x0:x1, y0:y1, z0:z1]
 
-    # ------------------- x flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
+        unique = torch.unique(masks)
+        if -1 not in skeletons:
+            keys = list(skeletons.keys())
+            for k in keys:
+                if not torch.any(unique == k):
+                    skeletons.pop(k)
+                else:
+                    skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=self.DEVICE)
+
+        return image, masks, skeletons
+
+    def _flipX(self, image, masks, skeletons):
         image = image.flip(1)
         masks = masks.flip(1)
 
@@ -548,733 +596,1173 @@ def transform_from_cfg(
             for k, v in skeletons.items():
                 skeletons[k][:, 0] = image.shape[1] - v[:, 0]
 
-    # ------------------- y flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
+        return image, masks
+
+    def _flipY(self, image, masks, skeletons):
         image = image.flip(2)
         masks = masks.flip(2)
         if -1 not in skeletons:
             for k, v in skeletons.items():
                 skeletons[k][:, 1] = image.shape[2] - v[:, 1]
+        return image, masks
 
-    # ------------------- z flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
+    def _flipZ(self, image, masks, skeletons):
         image = image.flip(3)
         masks = masks.flip(3)
         if -1 not in skeletons:
             for k, v in skeletons.items():
                 skeletons[k][:, 2] = image.shape[3] - v[:, 2]
+        return image, masks
 
-    # # ------------------- Random Invert
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        image = image.sub(1).mul(-1)
+    def _invert(self, image, masks):
+        image.sub_(1).mul_(-1)
+        return image, masks
 
-    # ------------------- Adjust Brightness
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        # funky looking but FAST
-        val = torch.empty(image.shape[0], device=DEVICE).uniform_(
-            BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
+    def _brightness(self, image, masks):
+        val = random.uniform(*self.BRIGHTNESS_RANGE)
+        # in place ok because flip always returns a copy
+        image = image.add(val)
+        return image, masks
+
+    def _contrast(self, image, masks):
+        contrast_val = random.uniform(*self.CONTRAST_RANGE)
+        # [ C, X, Y, Z ] -> [Z, C, X, Y]
+        image = ttf.adjust_contrast(image.permute(3, 0, 1, 2), contrast_val).permute(1, 2, 3, 0)
+
+        return image, masks
+
+    def _noise(self, image, masks):
+        noise = torch.rand(image.shape, device=self.DEVICE) * self.NOISE_GAMMA
+        image = image.add(noise)
+        return image, masks
+
+    def _normalize(self, image, masks):
+        # mean = image.float().mean()
+        # std = image.float().std()
+        mean = image.float().mean() if not self.dataset_mean else self.dataset_mean
+        std = image.float().std() if not self.dataset_std else self.dataset_std
+
+        image = image.float().sub(mean).div(std)
+        return image, masks
+
+    def set_dataset_mean(self, mean):
+        self.dataset_mean = mean
+        return self
+
+    def set_dataset_std(self, std):
+        self.dataset_std = std
+        return self
+
+    @torch.no_grad()
+    def forward(self, data_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
+
+        assert "masks" in data_dict, 'keyword "masks" not in data_dict'
+        assert "image" in data_dict, 'keyword "image" not in data_dict'
+        assert "skeletons" in data_dict, 'keyword "skeletons" not in data_dict'
+
+        logging.debug(f"TransformFromCfg.forward() | starting transforms on device: {self.DEVICE}")
+
+
+        logging.debug("TransformFromCfg.forward() | applying prefix function")
+        data_dict = self.prefix_function(data_dict)
+
+        masks = data_dict["masks"]
+        image = data_dict["image"]
+        skeletons = deepcopy(data_dict["skeletons"])
+
+        spatial_dims = masks.ndim - 1
+
+        logging.debug("TransformFromCfg.forward() | applying crop 1")
+        image, masks, skeletons = self._crop1(image, masks, skeletons)
+
+        # scale: int = 2 ** 16 if image.max() > 256 else 255  # Our images might be 16 bit, or 8 bit
+        # scale = scale if image.max() > 1 else 1.0
+
+        logging.debug("TransformFromCfg.forward() | normalizing")
+        image, masks = self._normalize(image, masks)
+
+        # affine
+        if random.random() < self.AFFINE_RATE:
+            logging.debug("TransformFromCfg.forward() | applying affine transform")
+            image, masks, skeletons = self._affine(image, masks, skeletons)
+
+        # ------------ Center Crop 2
+        logging.debug("TransformFromCfg.forward() | applying crop 2")
+        image, masks, skeletons = self._crop2(image, masks, skeletons)
+
+        # ------------------- x flip
+        if random.random() < self.FLIP_RATE:
+            logging.debug("TransformFromCfg.forward() | flipping in x")
+            image, masks = self._flipX(image, masks, skeletons)
+
+        # ------------------- y flip
+        if random.random() < self.FLIP_RATE:
+            logging.debug("TransformFromCfg.forward() | flipping in y")
+            image, masks = self._flipY(image, masks, skeletons)
+
+        # ------------------- z flip
+        if random.random() < self.FLIP_RATE:
+            logging.debug("TransformFromCfg.forward() | flipping in z")
+            image, masks = self._flipZ(image, masks, skeletons)
+
+        # # ------------------- Random Invert
+        if random.random() < self.BRIGHTNESS_RATE:
+            logging.debug("TransformFromCfg.forward() | inverting")
+            image, masks = self._invert(image, masks)
+
+        # ------------------- Adjust Brightness
+        if random.random() < self.BRIGHTNESS_RATE:
+            logging.debug("TransformFromCfg.forward() | adjusting brightness")
+            image, masks = self._brightness(image, masks)
+
+        # ------------------- Adjust Contrast
+        if random.random() < self.CONTRAST_RATE:
+            logging.debug("TransformFromCfg.forward() | adjusting contrast")
+            image, masks = self._contrast(image, masks)
+
+        # ------------------- Noise
+        if random.random() < self.NOISE_RATE:
+            logging.debug("TransformFromCfg.forward() | adding noise")
+            image, masks = self._noise(image, masks)
+
+        if spatial_dims == 2:
+            image = image[..., 0]
+            masks = masks[..., 0]
+
+        data_dict["image"] = image
+        data_dict["masks"] = masks
+
+        baked: Tensor = bake_skeleton(
+            masks,
+            skeletons,
+            anisotropy=self.BAKE_SKELETON_ANISOTROPY,
+            average=True,
+            device=self.DEVICE,
         )
-        image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+        data_dict["baked_skeleton"]: Union[Tensor, None] = baked
 
-    # ------------------- Adjust Contrast
-    if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
-        contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
-            (image.shape[0]), device=DEVICE
-        ) + CONTRAST_RANGE[0]
-
-        for z in range(image.shape[-1]):
-            image[..., z] = ttf.adjust_contrast(
-                image[..., z], contrast_val[0].item()
-            ).squeeze(0)
-
-    # ------------------- Noise
-    if torch.rand(1, device=DEVICE) < NOISE_RATE:
-        noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
-
-        image = image.add(noise).clamp(0, 1)
-    #
-    data_dict["image"] = image
-    data_dict["masks"] = masks
-    data_dict["skeletons"] = skeletons
-
-    baked: Tensor = bake_skeleton(
-        masks,
-        skeletons,
-        anisotropy=cfg.AUGMENTATION.BAKE_SKELETON_ANISOTROPY,
-        average=True,
-        device=DEVICE,
-    )
-    data_dict["baked_skeleton"]: Union[Tensor, None] = baked
-
-    _, x, y, z = masks.shape
-    data_dict["skele_masks"]: Tensor = skeleton_to_mask(
-        skeletons,
-        (x, y, z),
-        # kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE,
-        # n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE,
-    )
-
-    torch.save(data_dict, '/home/chris/Dropbox (Partners HealthCare)/transform_output.trch')
-
-    return data_dict
-
-
-def background_transform_from_cfg(
-        data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
-) -> DataDict:
-    # Image should be in shape of [C, H, W, D]
-    DEVICE: str = str(data_dict["image"].device) if device is None else device
-
-    # Image should be in shape of [C, H, W, D]
-    CROP_WIDTH = torch.tensor(cfg.AUGMENTATION.CROP_WIDTH, device=DEVICE)
-    CROP_HEIGHT = torch.tensor(cfg.AUGMENTATION.CROP_HEIGHT, device=DEVICE)
-    CROP_DEPTH = torch.tensor(cfg.AUGMENTATION.CROP_DEPTH, device=DEVICE)
-
-    FLIP_RATE = torch.tensor(cfg.AUGMENTATION.FLIP_RATE, device=DEVICE)
-
-    BRIGHTNESS_RATE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RATE, device=DEVICE)
-    BRIGHTNESS_RANGE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RANGE, device=DEVICE)
-
-    NOISE_GAMMA = torch.tensor(cfg.AUGMENTATION.NOISE_GAMMA, device=DEVICE)
-    NOISE_RATE = torch.tensor(cfg.AUGMENTATION.NOISE_RATE, device=DEVICE)
-
-    FILTER_RATE = torch.tensor(0.5, device=DEVICE)
-
-    CONTRAST_RATE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RATE, device=DEVICE)
-    CONTRAST_RANGE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RANGE, device=DEVICE)
-
-    AFFINE_RATE = torch.tensor(cfg.AUGMENTATION.AFFINE_RATE, device=DEVICE)
-    AFFINE_SCALE = torch.tensor(cfg.AUGMENTATION.AFFINE_SCALE, device=DEVICE)
-    AFFINE_YAW = torch.tensor(cfg.AUGMENTATION.AFFINE_YAW, device=DEVICE)
-    AFFINE_SHEAR = torch.tensor(cfg.AUGMENTATION.AFFINE_SHEAR, device=DEVICE)
-
-    image = torch.clone(data_dict["image"])  #
-
-    # ------------ Random Crop 1
-    extra = 300
-    w = (
-        CROP_WIDTH + extra
-        if CROP_WIDTH + extra <= image.shape[1]
-        else torch.tensor(image.shape[1])
-    )
-    h = (
-        CROP_HEIGHT + extra
-        if CROP_HEIGHT + extra <= image.shape[2]
-        else torch.tensor(image.shape[2])
-    )
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
-
-    shape = torch.tensor(image.shape[1::], device=DEVICE) - torch.tensor(
-        [w, h, d], device=DEVICE
-    )
-    center = torch.tensor(
-        [torch.randint(0, s, (1,)).item() if s > 0 else 0 for s in shape], device=DEVICE
-    )
-
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
-
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
-
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ].to(DEVICE)
-
-    # -------------------affine (Cant use baked skeletons)
-    if torch.rand(1, device=DEVICE) < AFFINE_RATE:
-        angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_YAW[0]
-        shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SHEAR[0]
-        scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SCALE[0]
-
-        image = ttf.affine(
-            image.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=[float(shear.item())],
-            scale=scale.item(),
-            translate=[0, 0],
-        ).permute(0, 2, 3, 1)
-
-    # ------------ Center Crop 2
-    w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
-    h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
-
-    center = center - torch.tensor([x0, y0, z0], device=DEVICE)
-
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
-
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
-
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
-
-    # ------------------- x flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(1)
-
-    # ------------------- y flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(2)
-
-    # ------------------- z flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(3)
-
-    # # ------------------- Random Invert
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        image = image.sub(1).mul(-1)
-
-    # ------------------- Adjust Brightness
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        # funky looking but FAST
-        val = torch.empty(image.shape[0], device=DEVICE).uniform_(
-            BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
-        )
-        image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
-
-    # ------------------- Adjust Contrast
-    if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
-        contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
-            (image.shape[0]), device=DEVICE
-        ) + CONTRAST_RANGE[0]
-
-        for z in range(image.shape[-1]):
-            image[..., z] = ttf.adjust_contrast(
-                image[..., z], contrast_val[0].item()
-            ).squeeze(0)
-
-    # ------------------- Noise
-    if torch.rand(1, device=DEVICE) < NOISE_RATE:
-        noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
-
-        image = image.add(noise).clamp(0, 1)
-
-    data_dict["image"] = image
-    data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
-    data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
-    data_dict["baked_skeleton"] = torch.zeros(
-        (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
-    )
-    data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
-
-    torch.save(data_dict, '/home/chris/Dropbox (Partners HealthCare)/transform_output.trch')
-
-
-    return data_dict
-
-
-@torch.no_grad()
-def merged_transform_3D(
-        data_dict: Dict[str, Tensor],
-        device: Optional[str] = None,
-        bake_skeleton_anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
-        smooth_skeleton_kernel_size: Tuple[int, int, int] = (3, 3, 1),
-) -> DataDict:
-    DEVICE: str = str(data_dict["image"].device) if device is None else device
-
-    # Image should be in shape of [C, H, W, D]
-    CROP_WIDTH = torch.tensor([300], device=DEVICE)
-    CROP_HEIGHT = torch.tensor([300], device=DEVICE)
-    CROP_DEPTH = torch.tensor([20], device=DEVICE)
-
-    FLIP_RATE = torch.tensor(0.5, device=DEVICE)
-
-    BRIGHTNESS_RATE = torch.tensor(0.4, device=DEVICE)
-    BRIGHTNESS_RANGE = torch.tensor((-0.1, 0.1), device=DEVICE)
-
-    NOISE_GAMMA = torch.tensor(0.1, device=DEVICE)
-    NOISE_RATE = torch.tensor(0.2, device=DEVICE)
-
-    FILTER_RATE = torch.tensor(0.5, device=DEVICE)
-
-    CONTRAST_RATE = torch.tensor(0.33, device=DEVICE)
-    CONTRAST_RANGE = torch.tensor((0.75, 2.0), device=DEVICE)
-
-    AFFINE_RATE = torch.tensor(0.66, device=DEVICE)
-    AFFINE_SCALE = torch.tensor((0.85, 1.1), device=DEVICE)
-    AFFINE_YAW = torch.tensor((-180, 180), device=DEVICE)
-    AFFINE_SHEAR = torch.tensor((-7, 7), device=DEVICE)
-
-    masks = torch.clone(data_dict["masks"])  # .to(DEVICE))
-    image = torch.clone(data_dict["image"])  #
-
-    skeletons = deepcopy(data_dict["skeletons"])
-    skeletons = {k: v.float().to(DEVICE) for k, v in skeletons.items()}
-
-    # ------------ Random Crop 1
-    extra = 300
-    w = (
-        CROP_WIDTH + extra
-        if CROP_WIDTH + extra <= image.shape[1]
-        else torch.tensor(image.shape[1])
-    )
-    h = (
-        CROP_HEIGHT + extra
-        if CROP_HEIGHT + extra <= image.shape[2]
-        else torch.tensor(image.shape[2])
-    )
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
-
-    # Randomly select a centroid to center in frame
-    ind: int = torch.randint(
-        len(skeletons.keys()), (1,), dtype=torch.long, device=DEVICE
-    ).item()
-    key: int = list(skeletons)[ind]
-    center: Tensor = skeletons[key].mean(0).squeeze()
-
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
-
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
-
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ].to(DEVICE)
-    masks = masks[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ].to(DEVICE)
-
-    # Correct the skeleton positions
-    unique = torch.unique(masks)
-    if -1 not in skeletons:
-        keys = list(skeletons.keys())
-        for k in keys:
-            if not torch.any(unique == k):
-                skeletons.pop(k)
-            else:
-                skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
-
-    # -------------------affine (Cant use baked skeletons)
-    if torch.rand(1, device=DEVICE) < AFFINE_RATE:
-        angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_YAW[0]
-        shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SHEAR[0]
-        scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SCALE[0]
-
-        mat: Tensor = _get_affine_matrix(
-            center=[image.shape[1] / 2, image.shape[2] / 2],
-            angle=-angle.item(),
-            translate=[0.0, 0.0],
-            scale=scale.item(),
-            shear=[float(shear.item()), float(shear.item())],
-            device=str(image.device),
+        _, x, y, z = masks.shape
+        data_dict["skele_masks"]: Tensor = skeleton_to_mask(
+            skeletons,
+            (x, y, z),
+            device=self.DEVICE
+            # kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE,
+            # n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE,
         )
 
-        # Rotate the skeletons by the affine matrix
-        for k, v in skeletons.items():
-            skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
-            _ones = torch.ones(
-                (1, 1, skeleton_xy.shape[-1]), device=DEVICE
-            )  # [1, 1, N]
-            skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
-            rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
-            skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
+        data_dict = self.posfix_function(data_dict)
 
-        image = ttf.affine(
-            image.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=[float(shear.item())],
-            scale=scale.item(),
-            translate=[0, 0],
-        ).permute(0, 2, 3, 1)
+        return data_dict
 
-        unique_before = masks.unique().long().sub(1)
-        unique_before = unique_before[unique_before.ge(0)]
+    def pre_fn(self, fn: Callable[[Dict[str, Tensor]], Dict[str, Tensor]]):
+        self.prefix_function = fn
+        return self
 
-        masks = ttf.affine(
-            masks.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=[float(shear.item())],
-            scale=scale.item(),
-            translate=[0, 0],
-        ).permute(0, 2, 3, 1)
+    def post_fn(self, fn: Callable[[Dict[str, Tensor]], Dict[str, Tensor]]):
+        self.posfix_function = fn
+        return self
 
-        unique_after = masks.unique().long().sub(1)
-        unique_after = unique_after[unique_after.ge(0)]
+    def post_crop_fn(self, fn):
+        self.postcrop_function = fn
+        return self
 
-        skeletons = {
-            k: v for k, v in skeletons.items() if torch.any(unique_after.eq(k - 1))
-        }
+    def __repr__(self):
+        return f"TransformFromCfg[Device:{self.DEVICE}]\ncfg.AUGMENTATION:\n=================\n{self.cfg.AUGMENTATION}]"
 
-        assert len(skeletons.keys()) > 0, f"{unique_after=}, {unique_before=}"
+#
+# @torch.no_grad()
+# # @torch.jit.ignore()
+# def transform_from_cfg(
+#         data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
+# ) -> DataDict:
+#     DEVICE: str = str(data_dict["image"].device) if device is None else device
+#
+#     # Image should be in shape of [C, H, W, D]
+#     CROP_WIDTH = torch.tensor(cfg.AUGMENTATION.CROP_WIDTH, device=DEVICE)
+#     CROP_HEIGHT = torch.tensor(cfg.AUGMENTATION.CROP_HEIGHT, device=DEVICE)
+#     CROP_DEPTH = torch.tensor(cfg.AUGMENTATION.CROP_DEPTH, device=DEVICE)
+#
+#     FLIP_RATE = torch.tensor(cfg.AUGMENTATION.FLIP_RATE, device=DEVICE)
+#
+#     BRIGHTNESS_RATE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RATE, device=DEVICE)
+#     BRIGHTNESS_RANGE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RANGE, device=DEVICE)
+#
+#     NOISE_GAMMA = torch.tensor(cfg.AUGMENTATION.NOISE_GAMMA, device=DEVICE)
+#     NOISE_RATE = torch.tensor(cfg.AUGMENTATION.NOISE_RATE, device=DEVICE)
+#
+#     FILTER_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     CONTRAST_RATE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RATE, device=DEVICE)
+#     CONTRAST_RANGE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RANGE, device=DEVICE)
+#
+#     AFFINE_RATE = torch.tensor(cfg.AUGMENTATION.AFFINE_RATE, device=DEVICE)
+#     AFFINE_SCALE = torch.tensor(cfg.AUGMENTATION.AFFINE_SCALE, device=DEVICE)
+#     AFFINE_YAW = torch.tensor(cfg.AUGMENTATION.AFFINE_YAW, device=DEVICE)
+#     AFFINE_SHEAR = torch.tensor(cfg.AUGMENTATION.AFFINE_SHEAR, device=DEVICE)
+#
+#     masks = data_dict["masks"]  # .to(DEVI
+#     image = data_dict["image"]
+#     #
+#     skeletons = deepcopy(data_dict["skeletons"])
+#     skeletons = {k: v.float() for k, v in skeletons.items()}
+#
+#     # ------------ Random Crop 1
+#     extra = 300
+#     w = (
+#         CROP_WIDTH + extra
+#         if CROP_WIDTH + extra <= image.shape[1]
+#         else torch.tensor(image.shape[1])
+#     )
+#     h = (
+#         CROP_HEIGHT + extra
+#         if CROP_HEIGHT + extra <= image.shape[2]
+#         else torch.tensor(image.shape[2])
+#     )
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     # Randomly select a centroid to center in frame
+#     ind: int = torch.randint(
+#         len(skeletons.keys()), (1,), dtype=torch.long, device=DEVICE
+#     ).item()
+#     key: int = list(skeletons)[ind]
+#     center: Tensor = skeletons[key].mean(0).squeeze()
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = (
+#         image[:, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()]
+#         .to(DEVICE)
+#         .div(255)
+#         .half()
+#     )
+#
+#     masks = masks[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ].to(DEVICE)
+#
+#     # Correct the skeleton positions
+#     unique = torch.unique(masks)
+#     if -1 not in skeletons:
+#         keys = list(skeletons.keys())
+#         for k in keys:
+#             if not torch.any(unique == k):
+#                 skeletons.pop(k)
+#             else:
+#                 skeletons[k] = skeletons[k].to(DEVICE) - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # --------------------------- elastic transform
+#     # image, masks, skeletons = elastic_deform(image.unsqueeze(0), masks.unsqueeze(0), skeletons)
+#     # image = image.squeeze(0)
+#     # masks = masks.squeeze(0)
+#
+#     # -------------------affine (Cant use baked skeletons)
+#     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
+#         angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_YAW[0]
+#         shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SHEAR[0]
+#         scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SCALE[0]
+#
+#         # shear = torch.tensor((35), device=DEVICE)
+#         # angle = torch.tensor((45), device=DEVICE)
+#         # scale = torch.tensor((1), device=DEVICE)
+#
+#         mat: Tensor = _get_affine_matrix(
+#             center=[image.shape[1] / 2, image.shape[2] / 2],
+#             angle=-angle.item(),
+#             translate=[0.0, 0.0],
+#             scale=scale.item(),
+#             shear=[0.0, float(shear.item())],
+#             device=str(image.device),
+#         )  # Rotate the skeletons by the affine matrix
+#
+#         for k, v in skeletons.items():
+#             skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
+#             _ones = torch.ones(
+#                 (1, 1, skeleton_xy.shape[-1]), device=DEVICE
+#             )  # [1, 1, N]
+#             skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
+#             rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
+#             skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
+#
+#         image = ttf.affine(
+#             image.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=float(shear.item()),
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#         # unique_before = masks.unique().long().sub(1)
+#         # unique_before = unique_before[unique_before.ge(0)]
+#
+#         masks = ttf.affine(
+#             masks.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=float(shear.item()),
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#         unique_after = masks.unique().long().sub(1)
+#         unique_after = unique_after[unique_after.ge(0)]
+#
+#         skeletons = {
+#             k: v for k, v in skeletons.items() if torch.any(unique_after.eq(k - 1))
+#         }
+#
+#         # assert len(skeletons.keys()) > 0, f"{unique_after=}, {unique_before=}"
+#
+#     # # ------------ Center Crop 2
+#     w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
+#     h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#     masks = masks[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#
+#     unique = torch.unique(masks)
+#     if -1 not in skeletons:
+#         keys = list(skeletons.keys())
+#         for k in keys:
+#             if not torch.any(unique == k):
+#                 skeletons.pop(k)
+#             else:
+#                 skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # ------------------- x flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(1)
+#         masks = masks.flip(1)
+#
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 0] = image.shape[1] - v[:, 0]
+#
+#     # ------------------- y flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(2)
+#         masks = masks.flip(2)
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 1] = image.shape[2] - v[:, 1]
+#
+#     # ------------------- z flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(3)
+#         masks = masks.flip(3)
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 2] = image.shape[3] - v[:, 2]
+#
+#     # # ------------------- Random Invert
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         image = image.sub(1).mul(-1)
+#
+#     # ------------------- Adjust Brightness
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         # funky looking but FAST
+#         val = torch.empty(image.shape[0], device=DEVICE).uniform_(
+#             BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
+#         )
+#         image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+#
+#     # ------------------- Adjust Contrast
+#     if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
+#         contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
+#             (image.shape[0]), device=DEVICE
+#         ) + CONTRAST_RANGE[0]
+#
+#         for z in range(image.shape[-1]):
+#             image[..., z] = ttf.adjust_contrast(
+#                 image[..., z], contrast_val[0].item()
+#             ).squeeze(0)
+#
+#     # ------------------- Noise
+#     if torch.rand(1, device=DEVICE) < NOISE_RATE:
+#         noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
+#
+#         image = image.add(noise).clamp(0, 1)
+#     #
+#     data_dict["image"] = image
+#     data_dict["masks"] = masks
+#     data_dict["skeletons"] = skeletons
+#
+#     baked: Tensor = bake_skeleton(
+#         masks,
+#         skeletons,
+#         anisotropy=cfg.AUGMENTATION.BAKE_SKELETON_ANISOTROPY,
+#         average=True,
+#         device=DEVICE,
+#     )
+#     data_dict["baked_skeleton"]: Union[Tensor, None] = baked
+#
+#     _, x, y, z = masks.shape
+#     data_dict["skele_masks"]: Tensor = skeleton_to_mask(
+#         skeletons,
+#         (x, y, z),
+#         # kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE,
+#         # n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE,
+#     )
+#
+#     return data_dict
 
-    # ------------ Center Crop 2
-    w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
-    h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+class BackgroundTransformFromCfg(TransformFromCfg):
+    def __init__(self, cfg: CfgNode, device: torch.device | str):
+        super(BackgroundTransformFromCfg, self).__init__(cfg, device)
 
-    center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+    def _crop1(self, image, masks, skeletons):
+        masks = masks.unsqueeze(-1) if masks.ndim == 3 else masks
+        image = image.unsqueeze(-1) if image.ndim == 3 else image
 
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
+        C, X, Y, Z = image.shape
+        # ------------ Random Crop 1
+        extra = 300
+        w = self.CROP_WIDTH + extra if self.CROP_WIDTH + extra <= X else X
+        h = self.CROP_HEIGHT + extra if self.CROP_HEIGHT + extra <= Y else Y
+        d = self.CROP_DEPTH if self.CROP_DEPTH <= Z else Z
 
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
+        # select a random point for croping
+        x0 = random.randint(0, X - w)
+        y0 = random.randint(0, Y - h)
+        z0 = random.randint(0, Z - d)
 
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
-    masks = masks[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
+        x1 = x0 + w
+        y1 = y0 + h
+        z1 = z0 + d
 
-    unique = torch.unique(masks)
-    if -1 not in skeletons:
-        keys = list(skeletons.keys())
-        for k in keys:
-            if not torch.any(unique == k):
-                skeletons.pop(k)
-            else:
-                skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+        image = image[:, x0:x1, y0:y1, z0:z1]
+        masks = masks[:, x0:x1, y0:y1, z0:z1]
 
-    # ------------------- x flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(1)
-        masks = masks.flip(1)
+        if image.device != self.DEVICE:
+            image = image.to(self.DEVICE)
 
-        if -1 not in skeletons:
-            for k, v in skeletons.items():
-                skeletons[k][:, 0] = image.shape[1] - v[:, 0]
+        if masks.device != self.DEVICE:
+            masks = masks.to(self.DEVICE)
 
-    # ------------------- y flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(2)
-        masks = masks.flip(2)
-        if -1 not in skeletons:
-            for k, v in skeletons.items():
-                skeletons[k][:, 1] = image.shape[2] - v[:, 1]
+        return image, masks, skeletons
 
-    # ------------------- z flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(3)
-        masks = masks.flip(3)
-        if -1 not in skeletons:
-            for k, v in skeletons.items():
-                skeletons[k][:, 2] = image.shape[3] - v[:, 2]
+    def forward(self, data_dict):
+        data_dict['masks'] = torch.ones_like(data_dict['image'])
+        data_dict['skeletons'] = {-1: None}
 
-    # # ------------------- Random Invert
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        image = image.sub(1).mul(-1)
+        data_dict = super().forward(data_dict)
+        return
 
-    # ------------------- Adjust Brightness
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        # funky looking but FAST
-        val = torch.empty(image.shape[0], device=DEVICE).uniform_(
-            BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
-        )
-        image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+    def __repr__(self):
+        return f"BackgroundTransformFromCfg[Device:{self.DEVICE}]\ncfg.AUGMENTATION:\n=================\n{self.cfg.AUGMENTATION}]"
 
-    # ------------------- Adjust Contrast
-    if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
-        contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
-            (image.shape[0]), device=DEVICE
-        ) + CONTRAST_RANGE[0]
+#
+# def background_transform_from_cfg(
+#         data_dict: Dict[str, Tensor], cfg: CfgNode, device: Optional[str] = None
+# ) -> DataDict:
+#     # Image should be in shape of [C, H, W, D]
+#     DEVICE: str = str(data_dict["image"].device) if device is None else device
+#
+#     # Image should be in shape of [C, H, W, D]
+#     CROP_WIDTH = torch.tensor(cfg.AUGMENTATION.CROP_WIDTH, device=DEVICE)
+#     CROP_HEIGHT = torch.tensor(cfg.AUGMENTATION.CROP_HEIGHT, device=DEVICE)
+#     CROP_DEPTH = torch.tensor(cfg.AUGMENTATION.CROP_DEPTH, device=DEVICE)
+#
+#     FLIP_RATE = torch.tensor(cfg.AUGMENTATION.FLIP_RATE, device=DEVICE)
+#
+#     BRIGHTNESS_RATE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RATE, device=DEVICE)
+#     BRIGHTNESS_RANGE = torch.tensor(cfg.AUGMENTATION.BRIGHTNESS_RANGE, device=DEVICE)
+#
+#     NOISE_GAMMA = torch.tensor(cfg.AUGMENTATION.NOISE_GAMMA, device=DEVICE)
+#     NOISE_RATE = torch.tensor(cfg.AUGMENTATION.NOISE_RATE, device=DEVICE)
+#
+#     FILTER_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     CONTRAST_RATE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RATE, device=DEVICE)
+#     CONTRAST_RANGE = torch.tensor(cfg.AUGMENTATION.CONTRAST_RANGE, device=DEVICE)
+#
+#     AFFINE_RATE = torch.tensor(cfg.AUGMENTATION.AFFINE_RATE, device=DEVICE)
+#     AFFINE_SCALE = torch.tensor(cfg.AUGMENTATION.AFFINE_SCALE, device=DEVICE)
+#     AFFINE_YAW = torch.tensor(cfg.AUGMENTATION.AFFINE_YAW, device=DEVICE)
+#     AFFINE_SHEAR = torch.tensor(cfg.AUGMENTATION.AFFINE_SHEAR, device=DEVICE)
+#
+#     image = torch.clone(data_dict["image"])  #
+#
+#     # ------------ Random Crop 1
+#     extra = 300
+#     w = (
+#         CROP_WIDTH + extra
+#         if CROP_WIDTH + extra <= image.shape[1]
+#         else torch.tensor(image.shape[1])
+#     )
+#     h = (
+#         CROP_HEIGHT + extra
+#         if CROP_HEIGHT + extra <= image.shape[2]
+#         else torch.tensor(image.shape[2])
+#     )
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     shape = torch.tensor(image.shape[1::], device=DEVICE) - torch.tensor(
+#         [w, h, d], device=DEVICE
+#     )
+#     center = torch.tensor(
+#         [torch.randint(0, s, (1,)).item() if s > 0 else 0 for s in shape], device=DEVICE
+#     )
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ].to(DEVICE)
+#
+#     # -------------------affine (Cant use baked skeletons)
+#     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
+#         angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_YAW[0]
+#         shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SHEAR[0]
+#         scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SCALE[0]
+#
+#         image = ttf.affine(
+#             image.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=[float(shear.item())],
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#     # ------------ Center Crop 2
+#     w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
+#     h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#
+#     # ------------------- x flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(1)
+#
+#     # ------------------- y flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(2)
+#
+#     # ------------------- z flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(3)
+#
+#     # # ------------------- Random Invert
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         image = image.sub(1).mul(-1)
+#
+#     # ------------------- Adjust Brightness
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         # funky looking but FAST
+#         val = torch.empty(image.shape[0], device=DEVICE).uniform_(
+#             BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
+#         )
+#         image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+#
+#     # ------------------- Adjust Contrast
+#     if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
+#         contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
+#             (image.shape[0]), device=DEVICE
+#         ) + CONTRAST_RANGE[0]
+#
+#         for z in range(image.shape[-1]):
+#             image[..., z] = ttf.adjust_contrast(
+#                 image[..., z], contrast_val[0].item()
+#             ).squeeze(0)
+#
+#     # ------------------- Noise
+#     if torch.rand(1, device=DEVICE) < NOISE_RATE:
+#         noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
+#
+#         image = image.add(noise).clamp(0, 1)
+#
+#     data_dict["image"] = image
+#     data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
+#     data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
+#     data_dict["baked_skeleton"] = torch.zeros(
+#         (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
+#     )
+#     data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
+#
+#
+#     return data_dict
 
-        for z in range(image.shape[-1]):
-            image[..., z] = ttf.adjust_contrast(
-                image[..., z], contrast_val[0].item()
-            ).squeeze(0)
-
-    # ------------------- Noise
-    if torch.rand(1, device=DEVICE) < NOISE_RATE:
-        noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
-
-        image = image.add(noise).clamp(0, 1)
-
-    data_dict["image"] = image
-    data_dict["masks"] = masks
-    data_dict["skeletons"] = skeletons
-
-    baked: Tensor = bake_skeleton(
-        masks.squeeze(0).contigous(),
-        skeletons,
-        anisotropy=bake_skeleton_anisotropy,
-        average=True,
-        device=DEVICE,
-    )
-    data_dict["baked_skeleton"]: Union[Tensor, None] = baked
-
-    _, x, y, z = masks.shape
-    data_dict["skele_masks"]: Tensor = skeleton_to_mask(
-        skeletons, (x, y, z), kernel_size=smooth_skeleton_kernel_size, n=1
-    )
-
-    return data_dict
-
-
-def background_transform_3D(
-        data_dict: Dict[str, Tensor], device: Optional[str] = None
-) -> DataDict:
-    DEVICE: str = str(data_dict["image"].device) if device is None else device
-
-    # Image should be in shape of [C, H, W, D]
-    CROP_WIDTH = torch.tensor([300], device=DEVICE)
-    CROP_HEIGHT = torch.tensor([300], device=DEVICE)
-    CROP_DEPTH = torch.tensor([20], device=DEVICE)
-
-    FLIP_RATE = torch.tensor(0.5, device=DEVICE)
-
-    BRIGHTNESS_RATE = torch.tensor(0.4, device=DEVICE)
-    INVERT_RATE = torch.tensor(0.5, device=DEVICE)
-    BRIGHTNESS_RANGE = torch.tensor((-0.1, 0.1), device=DEVICE)
-
-    NOISE_GAMMA = torch.tensor(0.1, device=DEVICE)
-    NOISE_RATE = torch.tensor(0.2, device=DEVICE)
-
-    FILTER_RATE = torch.tensor(0.5, device=DEVICE)
-
-    CONTRAST_RATE = torch.tensor(0.33, device=DEVICE)
-    CONTRAST_RANGE = torch.tensor((0.75, 2.0), device=DEVICE)
-
-    AFFINE_RATE = torch.tensor(0.66, device=DEVICE)
-    AFFINE_SCALE = torch.tensor((0.85, 1.1), device=DEVICE)
-    AFFINE_YAW = torch.tensor((-180, 180), device=DEVICE)
-    AFFINE_SHEAR = torch.tensor((-7, 7), device=DEVICE)
-
-    image = torch.clone(data_dict["image"])  #
-
-    # ------------ Random Crop 1
-    extra = 300
-    w = (
-        CROP_WIDTH + extra
-        if CROP_WIDTH + extra <= image.shape[1]
-        else torch.tensor(image.shape[1])
-    )
-    h = (
-        CROP_HEIGHT + extra
-        if CROP_HEIGHT + extra <= image.shape[2]
-        else torch.tensor(image.shape[2])
-    )
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
-
-    shape = torch.tensor(image.shape[1::], device=DEVICE) - torch.tensor(
-        [w, h, d], device=DEVICE
-    )
-    center = torch.tensor(
-        [torch.randint(0, s, (1,)).item() if s > 0 else 0 for s in shape], device=DEVICE
-    )
-
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
-
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
-
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ].to(DEVICE)
-
-    # -------------------affine (Cant use baked skeletons)
-    if torch.rand(1, device=DEVICE) < AFFINE_RATE:
-        angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_YAW[0]
-        shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SHEAR[0]
-        scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
-            1, device=DEVICE
-        ) + AFFINE_SCALE[0]
-
-        image = ttf.affine(
-            image.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=[float(shear.item())],
-            scale=scale.item(),
-            translate=[0, 0],
-        ).permute(0, 2, 3, 1)
-
-    # ------------ Center Crop 2
-    w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
-    h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
-    d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
-
-    center = center - torch.tensor([x0, y0, z0], device=DEVICE)
-
-    # Center that instance
-    x0 = (
-        center[0]
-        .sub(torch.floor(w / 2))
-        .long()
-        .clamp(min=0, max=image.shape[1] - w.item())
-    )
-    y0 = (
-        center[1]
-        .sub(torch.floor(h / 2))
-        .long()
-        .clamp(min=0, max=image.shape[2] - h.item())
-    )
-    z0 = (
-        center[2]
-        .sub(torch.floor(d / 2))
-        .long()
-        .clamp(min=0, max=image.shape[3] - d.item())
-    )
-
-    x1 = x0 + w
-    y1 = y0 + h
-    z1 = z0 + d
-
-    image = image[
-            :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
-            ]
-
-    # ------------------- x flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(1)
-
-    # ------------------- y flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(2)
-
-    # ------------------- z flip
-    if torch.rand(1, device=DEVICE) < FLIP_RATE:
-        image = image.flip(3)
-
-    # # ------------------- Random Invert
-    if torch.rand(1, device=DEVICE) < INVERT_RATE:
-        image = image.sub(1).mul(-1)
-
-    # ------------------- Adjust Brightness
-    if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
-        # funky looking but FAST
-        val = torch.empty(image.shape[0], device=DEVICE).uniform_(
-            BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
-        )
-        image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
-
-    # ------------------- Adjust Contrast
-    if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
-        contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
-            (image.shape[0]), device=DEVICE
-        ) + CONTRAST_RANGE[0]
-
-        for z in range(image.shape[-1]):
-            image[..., z] = ttf.adjust_contrast(
-                image[..., z], contrast_val[0].item()
-            ).squeeze(0)
-
-    # ------------------- Noise
-    if torch.rand(1, device=DEVICE) < NOISE_RATE:
-        noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
-
-        image = image.add(noise).clamp(0, 1)
-
-    data_dict["image"] = image
-    data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
-    data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
-    data_dict["baked_skeleton"] = torch.zeros(
-        (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
-    )
-    data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
-
-    return data_dict
+#
+# @torch.no_grad()
+# def merged_transform_3D(
+#         data_dict: Dict[str, Tensor],
+#         device: Optional[str] = None,
+#         bake_skeleton_anisotropy: Tuple[float, float, float] = (1.0, 1.0, 3.0),
+#         smooth_skeleton_kernel_size: Tuple[int, int, int] = (3, 3, 1),
+# ) -> DataDict:
+#     DEVICE: str = str(data_dict["image"].device) if device is None else device
+#
+#     # Image should be in shape of [C, H, W, D]
+#     CROP_WIDTH = torch.tensor([300], device=DEVICE)
+#     CROP_HEIGHT = torch.tensor([300], device=DEVICE)
+#     CROP_DEPTH = torch.tensor([20], device=DEVICE)
+#
+#     FLIP_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     BRIGHTNESS_RATE = torch.tensor(0.4, device=DEVICE)
+#     BRIGHTNESS_RANGE = torch.tensor((-0.1, 0.1), device=DEVICE)
+#
+#     NOISE_GAMMA = torch.tensor(0.1, device=DEVICE)
+#     NOISE_RATE = torch.tensor(0.2, device=DEVICE)
+#
+#     FILTER_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     CONTRAST_RATE = torch.tensor(0.33, device=DEVICE)
+#     CONTRAST_RANGE = torch.tensor((0.75, 2.0), device=DEVICE)
+#
+#     AFFINE_RATE = torch.tensor(0.66, device=DEVICE)
+#     AFFINE_SCALE = torch.tensor((0.85, 1.1), device=DEVICE)
+#     AFFINE_YAW = torch.tensor((-180, 180), device=DEVICE)
+#     AFFINE_SHEAR = torch.tensor((-7, 7), device=DEVICE)
+#
+#     masks = torch.clone(data_dict["masks"])  # .to(DEVICE))
+#     image = torch.clone(data_dict["image"])  #
+#
+#     skeletons = deepcopy(data_dict["skeletons"])
+#     skeletons = {k: v.float().to(DEVICE) for k, v in skeletons.items()}
+#
+#     # ------------ Random Crop 1
+#     extra = 300
+#     w = (
+#         CROP_WIDTH + extra
+#         if CROP_WIDTH + extra <= image.shape[1]
+#         else torch.tensor(image.shape[1])
+#     )
+#     h = (
+#         CROP_HEIGHT + extra
+#         if CROP_HEIGHT + extra <= image.shape[2]
+#         else torch.tensor(image.shape[2])
+#     )
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     # Randomly select a centroid to center in frame
+#     ind: int = torch.randint(
+#         len(skeletons.keys()), (1,), dtype=torch.long, device=DEVICE
+#     ).item()
+#     key: int = list(skeletons)[ind]
+#     center: Tensor = skeletons[key].mean(0).squeeze()
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ].to(DEVICE)
+#     masks = masks[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ].to(DEVICE)
+#
+#     # Correct the skeleton positions
+#     unique = torch.unique(masks)
+#     if -1 not in skeletons:
+#         keys = list(skeletons.keys())
+#         for k in keys:
+#             if not torch.any(unique == k):
+#                 skeletons.pop(k)
+#             else:
+#                 skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # -------------------affine (Cant use baked skeletons)
+#     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
+#         angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_YAW[0]
+#         shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SHEAR[0]
+#         scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SCALE[0]
+#
+#         mat: Tensor = _get_affine_matrix(
+#             center=[image.shape[1] / 2, image.shape[2] / 2],
+#             angle=-angle.item(),
+#             translate=[0.0, 0.0],
+#             scale=scale.item(),
+#             shear=[float(shear.item()), float(shear.item())],
+#             device=str(image.device),
+#         )
+#
+#         # Rotate the skeletons by the affine matrix
+#         for k, v in skeletons.items():
+#             skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
+#             _ones = torch.ones(
+#                 (1, 1, skeleton_xy.shape[-1]), device=DEVICE
+#             )  # [1, 1, N]
+#             skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
+#             rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
+#             skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
+#
+#         image = ttf.affine(
+#             image.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=[float(shear.item())],
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#         unique_before = masks.unique().long().sub(1)
+#         unique_before = unique_before[unique_before.ge(0)]
+#
+#         masks = ttf.affine(
+#             masks.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=[float(shear.item())],
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#         unique_after = masks.unique().long().sub(1)
+#         unique_after = unique_after[unique_after.ge(0)]
+#
+#         skeletons = {
+#             k: v for k, v in skeletons.items() if torch.any(unique_after.eq(k - 1))
+#         }
+#
+#         assert len(skeletons.keys()) > 0, f"{unique_after=}, {unique_before=}"
+#
+#     # ------------ Center Crop 2
+#     w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
+#     h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#     masks = masks[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#
+#     unique = torch.unique(masks)
+#     if -1 not in skeletons:
+#         keys = list(skeletons.keys())
+#         for k in keys:
+#             if not torch.any(unique == k):
+#                 skeletons.pop(k)
+#             else:
+#                 skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # ------------------- x flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(1)
+#         masks = masks.flip(1)
+#
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 0] = image.shape[1] - v[:, 0]
+#
+#     # ------------------- y flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(2)
+#         masks = masks.flip(2)
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 1] = image.shape[2] - v[:, 1]
+#
+#     # ------------------- z flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(3)
+#         masks = masks.flip(3)
+#         if -1 not in skeletons:
+#             for k, v in skeletons.items():
+#                 skeletons[k][:, 2] = image.shape[3] - v[:, 2]
+#
+#     # # ------------------- Random Invert
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         image = image.sub(1).mul(-1)
+#
+#     # ------------------- Adjust Brightness
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         # funky looking but FAST
+#         val = torch.empty(image.shape[0], device=DEVICE).uniform_(
+#             BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
+#         )
+#         image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+#
+#     # ------------------- Adjust Contrast
+#     if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
+#         contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
+#             (image.shape[0]), device=DEVICE
+#         ) + CONTRAST_RANGE[0]
+#
+#         for z in range(image.shape[-1]):
+#             image[..., z] = ttf.adjust_contrast(
+#                 image[..., z], contrast_val[0].item()
+#             ).squeeze(0)
+#
+#     # ------------------- Noise
+#     if torch.rand(1, device=DEVICE) < NOISE_RATE:
+#         noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
+#
+#         image = image.add(noise).clamp(0, 1)
+#
+#     data_dict["image"] = image
+#     data_dict["masks"] = masks
+#     data_dict["skeletons"] = skeletons
+#
+#     baked: Tensor = bake_skeleton(
+#         masks.squeeze(0).contigous(),
+#         skeletons,
+#         anisotropy=bake_skeleton_anisotropy,
+#         average=True,
+#         device=DEVICE,
+#     )
+#     data_dict["baked_skeleton"]: Union[Tensor, None] = baked
+#
+#     _, x, y, z = masks.shape
+#     data_dict["skele_masks"]: Tensor = skeleton_to_mask(
+#         skeletons, (x, y, z), kernel_size=smooth_skeleton_kernel_size, n=1
+#     )
+#
+#     return data_dict
+#
+#
+# def background_transform_3D(
+#         data_dict: Dict[str, Tensor], device: Optional[str] = None
+# ) -> DataDict:
+#     DEVICE: str = str(data_dict["image"].device) if device is None else device
+#
+#     # Image should be in shape of [C, H, W, D]
+#     CROP_WIDTH = torch.tensor([300], device=DEVICE)
+#     CROP_HEIGHT = torch.tensor([300], device=DEVICE)
+#     CROP_DEPTH = torch.tensor([20], device=DEVICE)
+#
+#     FLIP_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     BRIGHTNESS_RATE = torch.tensor(0.4, device=DEVICE)
+#     INVERT_RATE = torch.tensor(0.5, device=DEVICE)
+#     BRIGHTNESS_RANGE = torch.tensor((-0.1, 0.1), device=DEVICE)
+#
+#     NOISE_GAMMA = torch.tensor(0.1, device=DEVICE)
+#     NOISE_RATE = torch.tensor(0.2, device=DEVICE)
+#
+#     FILTER_RATE = torch.tensor(0.5, device=DEVICE)
+#
+#     CONTRAST_RATE = torch.tensor(0.33, device=DEVICE)
+#     CONTRAST_RANGE = torch.tensor((0.75, 2.0), device=DEVICE)
+#
+#     AFFINE_RATE = torch.tensor(0.66, device=DEVICE)
+#     AFFINE_SCALE = torch.tensor((0.85, 1.1), device=DEVICE)
+#     AFFINE_YAW = torch.tensor((-180, 180), device=DEVICE)
+#     AFFINE_SHEAR = torch.tensor((-7, 7), device=DEVICE)
+#
+#     image = torch.clone(data_dict["image"])  #
+#
+#     # ------------ Random Crop 1
+#     extra = 300
+#     w = (
+#         CROP_WIDTH + extra
+#         if CROP_WIDTH + extra <= image.shape[1]
+#         else torch.tensor(image.shape[1])
+#     )
+#     h = (
+#         CROP_HEIGHT + extra
+#         if CROP_HEIGHT + extra <= image.shape[2]
+#         else torch.tensor(image.shape[2])
+#     )
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     shape = torch.tensor(image.shape[1::], device=DEVICE) - torch.tensor(
+#         [w, h, d], device=DEVICE
+#     )
+#     center = torch.tensor(
+#         [torch.randint(0, s, (1,)).item() if s > 0 else 0 for s in shape], device=DEVICE
+#     )
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ].to(DEVICE)
+#
+#     # -------------------affine (Cant use baked skeletons)
+#     if torch.rand(1, device=DEVICE) < AFFINE_RATE:
+#         angle = (AFFINE_YAW[1] - AFFINE_YAW[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_YAW[0]
+#         shear = (AFFINE_SHEAR[1] - AFFINE_SHEAR[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SHEAR[0]
+#         scale = (AFFINE_SCALE[1] - AFFINE_SCALE[0]) * torch.rand(
+#             1, device=DEVICE
+#         ) + AFFINE_SCALE[0]
+#
+#         image = ttf.affine(
+#             image.permute(0, 3, 1, 2).float(),
+#             angle=angle.item(),
+#             shear=[float(shear.item())],
+#             scale=scale.item(),
+#             translate=[0, 0],
+#         ).permute(0, 2, 3, 1)
+#
+#     # ------------ Center Crop 2
+#     w = CROP_WIDTH if CROP_WIDTH <= image.shape[1] else torch.tensor(image.shape[1])
+#     h = CROP_HEIGHT if CROP_HEIGHT <= image.shape[2] else torch.tensor(image.shape[2])
+#     d = CROP_DEPTH if CROP_DEPTH <= image.shape[3] else torch.tensor(image.shape[3])
+#
+#     center = center - torch.tensor([x0, y0, z0], device=DEVICE)
+#
+#     # Center that instance
+#     x0 = (
+#         center[0]
+#         .sub(torch.floor(w / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[1] - w.item())
+#     )
+#     y0 = (
+#         center[1]
+#         .sub(torch.floor(h / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[2] - h.item())
+#     )
+#     z0 = (
+#         center[2]
+#         .sub(torch.floor(d / 2))
+#         .long()
+#         .clamp(min=0, max=image.shape[3] - d.item())
+#     )
+#
+#     x1 = x0 + w
+#     y1 = y0 + h
+#     z1 = z0 + d
+#
+#     image = image[
+#             :, x0.item(): x1.item(), y0.item(): y1.item(), z0.item(): z1.item()
+#             ]
+#
+#     # ------------------- x flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(1)
+#
+#     # ------------------- y flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(2)
+#
+#     # ------------------- z flip
+#     if torch.rand(1, device=DEVICE) < FLIP_RATE:
+#         image = image.flip(3)
+#
+#     # # ------------------- Random Invert
+#     if torch.rand(1, device=DEVICE) < INVERT_RATE:
+#         image = image.sub(1).mul(-1)
+#
+#     # ------------------- Adjust Brightness
+#     if torch.rand(1, device=DEVICE) < BRIGHTNESS_RATE:
+#         # funky looking but FAST
+#         val = torch.empty(image.shape[0], device=DEVICE).uniform_(
+#             BRIGHTNESS_RANGE[0], BRIGHTNESS_RANGE[1]
+#         )
+#         image = image.add(val.reshape(image.shape[0], 1, 1, 1)).clamp(0, 1)
+#
+#     # ------------------- Adjust Contrast
+#     if torch.rand(1, device=DEVICE) < CONTRAST_RATE:
+#         contrast_val = (CONTRAST_RANGE[1] - CONTRAST_RANGE[0]) * torch.rand(
+#             (image.shape[0]), device=DEVICE
+#         ) + CONTRAST_RANGE[0]
+#
+#         for z in range(image.shape[-1]):
+#             image[..., z] = ttf.adjust_contrast(
+#                 image[..., z], contrast_val[0].item()
+#             ).squeeze(0)
+#
+#     # ------------------- Noise
+#     if torch.rand(1, device=DEVICE) < NOISE_RATE:
+#         noise = torch.rand(image.shape, device=DEVICE) * NOISE_GAMMA
+#
+#         image = image.add(noise).clamp(0, 1)
+#
+#     data_dict["image"] = image
+#     data_dict["masks"] = torch.zeros_like(image, device=DEVICE)
+#     data_dict["skeletons"]: Dict[int, Tensor] = {-1: torch.empty((0, 3), device=DEVICE)}
+#     data_dict["baked_skeleton"] = torch.zeros(
+#         (3, image.shape[1], image.shape[2], image.shape[3]), device=DEVICE
+#     )
+#     data_dict["skele_masks"] = torch.zeros_like(image, device=DEVICE)
+#
+#     return data_dict
 
 
 if __name__ == "__main__":
@@ -1316,14 +1804,14 @@ if __name__ == "__main__":
 
     skl_msk = skeleton_to_mask(skeletons, (x, y, z))
 
-    plt.imshow(og[0,0,:,:,14])
+    plt.imshow(og[0, 0, :, :, 14])
     plt.show()
 
-    plt.imshow(og_skl[0,:,:,14])
+    plt.imshow(og_skl[0, :, :, 14])
     plt.show()
 
-    plt.imshow(img[0,0,:,:,14])
+    plt.imshow(img[0, 0, :, :, 14])
     plt.show()
 
-    plt.imshow(skl_msk[0,:,:,14])
+    plt.imshow(skl_msk[0, :, :, 14])
     plt.show()

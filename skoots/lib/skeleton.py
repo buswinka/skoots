@@ -12,6 +12,7 @@ from skoots.lib.morphology import (
 )
 from skoots.lib.utils import get_cached_ball_coords, get_cached_disk_coords
 from torch import Tensor
+import logging
 
 
 @torch.jit.script
@@ -55,6 +56,8 @@ def _min_skeleton_kernel(
     # Pointers to mat
     mask_pointer,
     skeleton_pointer,
+    skeleton_id_map_pointer,
+    skeleton_len_pointer,
     out_pointer,
     anisotopy_pointer,  # 1D tensor
     # shapes of the MASK/OUT
@@ -75,11 +78,53 @@ def _min_skeleton_kernel(
     n_skeleton: tl.constexpr,
     dim_skeleton,  # should always be three
     # skeleton strides
+    # id_skeleton_stride, # skeleton will be a [N_objects, M_points, C=3] Tensor
     n_skeleton_stride,
+    m_skeleton_stride,
     dim_skeleton_stride,
-    instance_id: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+
+    SKEL_BLOCK_SIZE: tl.constexpr,
+    ID_BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    This is a triton kernel for calculating the closest skeleton vertex of a to a voxel in an instance mask, where each
+    ID has a unique skeleton. Each instance mask voxel is presumed to contain a 0 (background) or integer id,
+    signifying this voxel belongs to the object with that id.
+
+    The mask is a 3D tensor of shape (X, Y, Z) with N objects in it. Each N object has a unique ID, but is not
+    required to be sequential. I.e. there can be two IDs in mask: 234 and 6.
+
+    Each objects skeleton consists of 3D points; with the number of points varrying between objects.
+    This kernel combines
+
+    :param mask_pointer:
+    :param skeleton_pointer:
+    :param skeleton_id_map_pointer:
+    :param skeleton_len_pointer:
+    :param out_pointer:
+    :param anisotopy_pointer:
+    :param mask_x_shape:
+    :param mask_y_shape:
+    :param mask_z_shape:
+    :param out_c_shape:
+    :param anisotropy_stride:
+    :param mask_x_stride:
+    :param mask_y_stride:
+    :param mask_z_stride:
+    :param out_c_stride:
+    :param out_x_stride:
+    :param out_y_stride:
+    :param out_z_stride:
+    :param n_skeleton:
+    :param dim_skeleton:
+    :param n_skeleton_stride:
+    :param m_skeleton_stride:
+    :param dim_skeleton_stride:
+    :param SKEL_BLOCK_SIZE:
+    :param ID_BLOCK_SIZE:
+    :return:
+    """
+
     # padding
 
     x0 = tl.program_id(axis=0)
@@ -91,7 +136,7 @@ def _min_skeleton_kernel(
     )
 
     if (
-        mask_center != instance_id
+        mask_center == 0.0
     ):  # depending on how triton does this, it might be scuffed
         return
 
@@ -99,16 +144,40 @@ def _min_skeleton_kernel(
     dy = tl.load(anisotopy_pointer + (1 * anisotropy_stride))  # this should always be 3
     dz = tl.load(anisotopy_pointer + (2 * anisotropy_stride))  # this should always be 3
 
-    _off = tl.arange(0, BLOCK_SIZE)
-    skel_x_ptr = skeleton_pointer + _off * n_skeleton_stride + (0 * dim_skeleton_stride)
+    _off = tl.arange(0, ID_BLOCK_SIZE)  # assume stride is one here. Verified elsewhere
+    skeleton_id_map = tl.load(skeleton_id_map_pointer + _off, mask=_off < n_skeleton)
+    skeleton_len_map = tl.load(skeleton_len_pointer + _off, mask=_off < n_skeleton)
 
-    skel_y_ptr = skeleton_pointer + _off * n_skeleton_stride + (1 * dim_skeleton_stride)
-    skel_z_ptr = skeleton_pointer + _off * n_skeleton_stride + (2 * dim_skeleton_stride)
+    tl.device_assert(tl.sum(skeleton_len_map > 0) == n_skeleton, 'it is broken')
+
+
+    index = tl.argmax(skeleton_id_map == mask_center, axis=0)
+
+    tl.device_assert(mask_center != 0, 'mask center is zero!')
+    tl.device_assert(tl.sum(skeleton_id_map == mask_center) > 0, 'not finding skeleton id')
+
+
+    dummy = tl.zeros_like(skeleton_len_map)
+
+    tl.device_assert(tl.sum(tl.where( skeleton_id_map==mask_center, skeleton_len_map, dummy)) > 0, 'where is busted')
+
+    N_element_skel = tl.max(
+        tl.where(skeleton_id_map == mask_center, skeleton_len_map, dummy)
+    )
+
+    tl.device_assert(N_element_skel > 0, 'skeleton n elements at id is zero')
+
+
+    _off = tl.arange(0, SKEL_BLOCK_SIZE)
+
+    skel_x_ptr = skeleton_pointer + _off * m_skeleton_stride + (0 * dim_skeleton_stride) + (index * n_skeleton_stride)
+    skel_y_ptr = skeleton_pointer + _off * m_skeleton_stride + (1 * dim_skeleton_stride) + (index * n_skeleton_stride)
+    skel_z_ptr = skeleton_pointer + _off * m_skeleton_stride + (2 * dim_skeleton_stride) + (index * n_skeleton_stride)
 
     # pid is the center px location.
-    skl_x = tl.load(skel_x_ptr, _off < n_skeleton)
-    skl_y = tl.load(skel_y_ptr, _off < n_skeleton)
-    skl_z = tl.load(skel_z_ptr, _off < n_skeleton)
+    skl_x = tl.load(skel_x_ptr, _off < N_element_skel)
+    skl_y = tl.load(skel_y_ptr, _off < N_element_skel)
+    skl_z = tl.load(skel_z_ptr, _off < N_element_skel)
 
     dist = (
         (skl_x - x0) * (skl_x - x0) * dx
@@ -119,13 +188,13 @@ def _min_skeleton_kernel(
     min_dist = tl.min(dist, axis=0)
 
     # out = tl.zeros((3, n_skeleton), dtype=tl.float16)
-    _zeros = tl.zeros((BLOCK_SIZE,), dtype=tl.float16)
+    _zeros = tl.zeros((SKEL_BLOCK_SIZE,), dtype=tl.float16)
 
     closest_x = tl.max(tl.where(dist == min_dist, skl_x, _zeros), axis=0)
     closest_y = tl.max(tl.where(dist == min_dist, skl_y, _zeros), axis=0)
     closest_z = tl.max(tl.where(dist == min_dist, skl_z, _zeros), axis=0)
-
-    # store_x
+    #
+    # # store_x
     tl.store(
         out_pointer
         + (0 * out_c_stride)
@@ -196,35 +265,59 @@ def _bake_skeleton_triton(
 
         anisotropy = torch.tensor(anisotropy, device=masks.device).contiguous()
 
+        skeleton_len_tensor = torch.zeros(len(skeletons), device=masks.device) # the size of each individual skeleton
+        skeleton_id_map_tensor = torch.zeros(len(skeletons), device=masks.device) # the mapping of unique id to index in skeleton
+
+        max_shape = max(v.shape[0] for v in skeletons.values()) if skeletons else 0
+        if max_shape == 0:
+            return baked
+
+        combined_skeleton_tensors = torch.zeros((len(skeletons), max_shape, 3), device=masks.device) # [N_skel, M_points, 3]
+
+        # Iterate over to place data in propper place...
+        for i, (k,v) in enumerate(skeletons.items()):
+            skeleton_len_tensor[i] = v.shape[0]  # place len of skel
+            skeleton_id_map_tensor[i] =  k          # what index at each len
+            combined_skeleton_tensors[i, 0:v.shape[0], :] = v
+
+        assert skeleton_len_tensor.stride(0) == 1
+        assert skeleton_id_map_tensor.stride(0) == 1
+
+
         num_out = 3
         grid = (x, y, z)
-        for k, v in skeletons.items():
-            n_skel, dim_skel = v.shape
-            _min_skeleton_kernel[grid](
-                mask_pointer=masks,
-                skeleton_pointer=v,
-                out_pointer=baked,
-                anisotopy_pointer=anisotropy,
-                mask_x_shape=x,
-                mask_y_shape=y,
-                mask_z_shape=z,
-                mask_x_stride=masks.stride(0),
-                mask_y_stride=masks.stride(1),
-                mask_z_stride=masks.stride(2),
-                out_c_stride=baked.stride(0),
-                out_x_stride=baked.stride(1),
-                out_y_stride=baked.stride(2),
-                out_z_stride=baked.stride(3),
-                out_c_shape=num_out,
-                n_skeleton_stride=v.stride(0),
-                dim_skeleton_stride=v.stride(1),
-                anisotropy_stride=anisotropy.stride(0),
-                n_skeleton=n_skel,
-                dim_skeleton=dim_skel,
-                instance_id=int(k),
-                BLOCK_SIZE=next_power_of_2(int(n_skel)),
-            )
+
+        N_skeletons = len(skeletons)
+        dim_skel=3
+        _min_skeleton_kernel[grid](
+            mask_pointer=masks,
+            skeleton_pointer=combined_skeleton_tensors,
+            skeleton_id_map_pointer=skeleton_id_map_tensor,
+            skeleton_len_pointer=skeleton_len_tensor,
+            out_pointer=baked,
+            anisotopy_pointer=anisotropy,
+            mask_x_shape=x,
+            mask_y_shape=y,
+            mask_z_shape=z,
+            mask_x_stride=masks.stride(0),
+            mask_y_stride=masks.stride(1),
+            mask_z_stride=masks.stride(2),
+            out_c_stride=baked.stride(0),
+            out_x_stride=baked.stride(1),
+            out_y_stride=baked.stride(2),
+            out_z_stride=baked.stride(3),
+            out_c_shape=num_out,
+            n_skeleton_stride=combined_skeleton_tensors.stride(0),
+            m_skeleton_stride=combined_skeleton_tensors.stride(1),
+            dim_skeleton_stride=combined_skeleton_tensors.stride(2),
+            anisotropy_stride=anisotropy.stride(0),
+            n_skeleton=N_skeletons,
+            dim_skeleton=dim_skel,
+            SKEL_BLOCK_SIZE=next_power_of_2(int(max_shape)),
+            ID_BLOCK_SIZE=next_power_of_2(int(N_skeletons)),
+        )
         torch.cuda.synchronize(masks.device)
+
     return baked
 
 
@@ -339,13 +432,24 @@ def bake_skeleton(
 
     :return: Baked skeleton
     """
+    if -1 in skeletons:
+        x, y, z = masks.shape
+        baked = (
+            torch.zeros((3, x, y, z)).to(masks.device).to(torch.float16).contiguous()
+        )
+        return baked
+
+
     if masks.is_cuda:
+        logging.debug(f'skoots.lib.skeletons.bake_skeleton() | applying triton kernel for skeleton baking')
         if masks.ndim == 4 and masks.shape[0] == 1:
             masks = masks.squeeze(0).contiguous()
         baked = _bake_skeleton_triton(masks, skeletons, anisotropy)
     else:
+        logging.debug(f'skoots.lib.skeletons.bake_skeleton() | applying pure torch kernel for skeleton baking')
         baked = _bake_skeleton_torch(masks, skeletons, anisotropy, device)
 
+    logging.debug(f'skoots.lib.skeletons.bake_skeleton() | averaging baked skeletons')
     baked = average_baked_skeletons(baked.unsqueeze(0).float()).squeeze(0) if average else baked
     # baked[baked == 0] = -100
 
@@ -355,6 +459,7 @@ def bake_skeleton(
 def skeleton_to_mask(
     skeletons: Dict[int, Tensor],
     shape: Tuple[int, int, int],
+    device: torch.device | str = None
 ) -> Tensor:
     r"""
     Converts a skeleton Dict to a skeleton mask which can simply be regressed against via Dice loss or similar...
@@ -366,11 +471,15 @@ def skeleton_to_mask(
 
     :param skeletons: Dict of skeletons
     :param shape: Shape of final mask
-    :return: Maks of embedded skeleton px
+    :param device: output device
+    :return: Mask of embedded skeleton px
     """
 
     skeleton_mask = None
     cached_inds = None
+
+    if -1 in skeletons:
+        return torch.zeros(shape, device)
 
     for k, v in skeletons.items():
         if skeleton_mask is None:
@@ -501,15 +610,36 @@ def index_skeleton_by_embed(skeleton: Tensor, embed: Tensor) -> Tensor:
 
 if __name__ == "__main__":
     import skimage.io as io
-    img = io.imread("/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/mitochondria/train/hide/hide_train.tif")
-    shape = img.shape
-    shape = (shape[1], shape[2], shape[0])
-    skel = torch.load(
-        "/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/mitochondria/train/hide/hide_train.skeletons.trch")
 
-    # for k, v in skel.items():
-    #     print(k ,v.shape)
+    img = io.imread("/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/plant-stem/train/0hrs_plant1_trim-acylYFP.tif")
+    mask = io.imread("/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/plant-stem/train/0hrs_plant1_trim-acylYFP.labels.tif")
+    skel = torch.load("/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/plant-stem/train/0hrs_plant1_trim-acylYFP.skeletons.trch")
 
-    masks = skeleton_to_mask(skel, shape)
 
-    io.imsave("/home/chris/Desktop/hide_skeletons.tif", masks.squeeze().permute(2,0,1).mul(255).to(torch.uint8).numpy())
+    mask = torch.from_numpy(mask.astype(int)).contiguous().cuda()
+
+    for k, v in skel.items():
+        skel[k] = v.float().cuda()
+
+    out = bake_skeleton(mask, skel, average=False)
+
+
+
+    # n_mask = torch.zeros(len(skel)) # the size of each individual skeleton
+    # ind_map = torch.zeros(len(skel)) # the mapping of unique id to index in skeleton
+    #
+    # max_shape = max(v.shape[0] for v in skel.values())
+    #
+    # all_skels = torch.zeros((len(skel), max_shape, 3))
+    #
+    # for i, (k,v) in enumerate(skel.items()):
+    #     n_mask[i] = v.shape[0]
+    #     ind_map[i] =  k
+    #
+    #     all_skels[i, 0:v.shape[0], :] = v
+    #
+    #
+    # shape = img.shape
+    # shape = (shape[1], shape[2], shape[0])
+    # print(shape)
+    #

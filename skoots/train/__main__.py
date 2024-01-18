@@ -10,6 +10,7 @@ from skoots.lib.mp_utils import find_free_port
 from skoots.lib.utils import cfg_to_bism_model
 from skoots.train.engine import train
 import warnings
+import logging
 
 torch.set_float32_matmul_precision("high")
 
@@ -30,7 +31,29 @@ def load_cfg_from_file(args: argparse.Namespace):
 def main():
     parser = argparse.ArgumentParser(description="SKOOTS Training Parameters")
     parser.add_argument("--config-file", type=str, help="YAML config file for training")
+    parser.add_argument(
+        "--log",
+        type=int,
+        default=3,
+        help="Log Level: 0-Debug, 1-Info, 2-Warning, 3-Error, 4-Critical",
+    )
+
     args = parser.parse_args()
+
+    # Set logging level
+    _log_map = [
+        logging.DEBUG,
+        logging.INFO,
+        logging.WARNING,
+        logging.ERROR,
+        logging.CRITICAL,
+    ]
+
+    logging.basicConfig(
+        level=_log_map[args.log],
+        format="[%(asctime)s] skoots-train [%(levelname)s]: %(message)s",
+        force=True,
+    )
 
     cfg = load_cfg_from_file(args)
     model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
@@ -49,7 +72,7 @@ def main():
     port = find_free_port()
     world_size = cfg.SYSTEM.NUM_GPUS if cfg.TRAIN.DISTRIBUTED else 1
 
-    mp.spawn(train, args=(port, world_size, model, cfg), nprocs=world_size, join=True)
+    mp.spawn(train, args=(port, world_size, model, cfg, args.log), nprocs=world_size, join=True)
 
 
 if __name__ == "__main__":
