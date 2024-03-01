@@ -2,6 +2,9 @@ from functools import partial
 from numbers import Number
 from typing import List, Tuple, Optional
 
+import numpy as np
+import skimage.morphology
+
 import bism.backends
 import bism.modules
 import torch
@@ -9,7 +12,7 @@ import torch.nn as nn
 from bism.models.spatial_embedding import SpatialEmbedding
 from torch import Tensor
 from yacs.config import CfgNode
-
+from functools import lru_cache
 
 def cfg_to_bism_model(cfg: CfgNode) -> nn.Module:
     """utility function to get a bism model from cfg"""
@@ -415,7 +418,27 @@ def get_cached_ball_coords(device: str) -> Tensor:
     ]
     return torch.tensor(out, device=device).T
 
-def get_cached_disk_coords(device: str) -> Tensor:
+@lru_cache()
+def get_cached_disk_coords(device: str, radius: 7, flank_radius: 3) -> Tensor:
+    center = skimage.morphology.disk(radius)
+    flank = skimage.morphology.disk(flank_radius)
+
+    c = center.shape[0]
+    f = flank.shape[0]
+
+    flank = np.pad(flank, ((c-f) // 2, (c-f) // 2))
+
+    total = torch.from_numpy(np.stack((flank, center, flank), axis=-1))
+    nonzero = torch.nonzero(total)
+    assert nonzero.shape[-1] == 3, f'{nonzero.shape=}'
+
+    nonzero[:, -1] -= 1
+    nonzero[:, [0, 1]] -= radius//2
+
+    return nonzero.to(device).T
+
+
+def _get_cached_disk_coords(device: str) -> Tensor:
     out = [
         [0, 7, 0],
         [1, 4, 0],
@@ -630,3 +653,7 @@ def get_cached_disk_coords(device: str) -> Tensor:
     out[0,:] -= 8
     out[1,:] -= 8
     return out
+
+if __name__ == '__main__':
+    out = get_cached_disk_coords('cpu', 1, 1)
+    # test = _get_cached_disk_coords('cpu')

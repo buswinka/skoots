@@ -16,10 +16,11 @@ def convert(base_dir):
         files = glob.glob(base_dir)
     else:
         files = [base_dir]
-    print("Found the following files to convert:")
+
+    print(f"Found {len(files)} files to convert:")
     for f in files:
         if os.path.exists(f):
-            print(f"\t{f}")
+            print(f"-->  {f}")
         # print(f'\t{f}')
     print("------")
     for f in files:
@@ -28,7 +29,7 @@ def convert(base_dir):
         print(f"Converting {f}...", end="")
 
         if f.endswith(".zarr"):
-            x = zarr.load(f)
+            x = zarr.load(f)[...]
         else:
             x = torch.load(f, map_location="cpu")
 
@@ -44,8 +45,15 @@ def convert(base_dir):
                 io.imsave(new_file, x, compression="zlib")
 
             elif x.ndim == 4:
-                x = x.transpose(3, 1, 2, 0).astype(np.uint16)
-                io.imsave(new_file, x, compression="zlib")
+                if x.max() < 2:
+                    x = torch.from_numpy(x)
+                    index = x == 0
+                    x = x.add(1).div(2).mul(255)
+                    x[index] = 0
+                    x = x.numpy()
+
+                x = x.transpose(3, 1, 2, 0).astype(np.uint8)
+                io.imsave(new_file, x)
 
         else:
             if x.min() < 0:
@@ -62,7 +70,7 @@ def convert(base_dir):
             elif x.ndim == 4:
                 print(new_file)
                 io.imsave(
-                    new_file, x.permute(3, 1, 2, 0).numpy(), compression="zlib"
+                    new_file, x.permute(3, 1, 2, 0).numpy()
                 )  # Z, C, X, Y
 
         del x

@@ -77,7 +77,7 @@ def _vec2embed2D(scale: Tensor, vector: Tensor) -> Tensor:
 
 
 @torch.jit.script
-def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
+def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1, decay: float = 1.0) -> Tensor:
     """
     2D or 3D vector to embedding
     Could be a faster way to do this with strides but idk...
@@ -105,10 +105,11 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     mesh = mesh + scaled_vector
 
     scale = 1.0
+
     for _ in range(n - 1):  # Only executes if n > 1
         # convert to index.
 
-        scale *= 1.0
+        scale *= decay
 
         scaled_vector = vector.mul(scale * num.view(newshape))
 
@@ -131,7 +132,7 @@ def _vec2embed3D(scale: Tensor, vector: Tensor, n: int = 1) -> Tensor:
     return mesh
 
 
-def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
+def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1, decay: float = 1.0) -> Tensor:
     """
     Converts a 2D or 3D vector field to a spatial embedding by adding the vector at any position to its own position.
 
@@ -156,13 +157,18 @@ def vector_to_embedding(scale: Tensor, vector: Tensor, N: int = 1) -> Tensor:
 
     :param scale: Scaling factors for each vector spatial dimension
     :param vector: Vector field predicted by a neural network
+    :param N: Number of iterations to apply the vectors.
+    :param decay: vector strength decay after each iteration. Default 1.0
 
     :return: Pixel spatial embeddings
     """
+    if vector.ndim == 4:
+        assert decay == 1.0, f'decay parameter only valid for 5D tensor'
+        assert N == 1, f'N must be equal to 1 for 4D tensors.'
 
     # assert vector.ndim in [4, 5], f'Vector must be a 4D or 5D tensor, not {vector.ndim}D: {vector.shape=}'
     return (
-        _vec2embed3D(scale, vector, N)
+        _vec2embed3D(scale, vector, N, decay)
         if vector.ndim == 5
         else _vec2embed2D(scale, vector)
     )

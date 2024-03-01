@@ -9,3 +9,8 @@ class DataDict(TypedDict):
     baked_skeletons: Tensor
     skele_masks: Tensor
 
+class SparseDataDict(TypedDict):
+    image: Tensor
+    background: Tensor
+    skeletons: Dict[int, Tensor]
+    skele_masks: Tensor

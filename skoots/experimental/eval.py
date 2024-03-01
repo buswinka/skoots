@@ -33,7 +33,6 @@ warnings.filterwarnings("ignore")
 def eval(
     image_path: str,
     checkpoint_path: str = "/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/models/Oct21_17-15-08_CHRISUBUNTU.trch",
-    used_cached_data: bool = False
 ) -> None:
     """
     Evaluates SKOOTS on an arbitrary image.
@@ -98,17 +97,9 @@ def eval(
 
     vector_scale = torch.tensor(cfg.SKOOTS.VECTOR_SCALING)
     logging.info("Pre-allocating output arrays...")
-    if not used_cached_data:
-        skeleton: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_skeleton.zarr", mode='w', shape=(1,x,y,z), dtype="|u1")
-        vectors: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_vectors.zarr", mode='w', shape=(3,x,y,z), dtype="|f2")
 
-    elif os.exists(filename_without_extensions + f"_skoots_skeleton.zarr") and os.path.exists(filename_without_extensions + f"_skoots_vectors.zarr"):
-        skeleton: zarr.Array = zarr.load(filename_without_extensions + f"_skoots_skeleton.zarr")
-        vectors: zarr.Array = zarr.load(filename_without_extensions + f"_skoots_vectors.zarr")
-
-    else:  # fallback
-        skeleton: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_skeleton.zarr", mode='w', shape=(1,x,y,z), dtype="|u1")
-        vectors: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_vectors.zarr", mode='w', shape=(3,x,y,z), dtype="|f2")
+    skeleton: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_skeleton.zarr", mode='w', shape=(1,x,y,z), dtype="|u1")
+    vectors: zarr.Array = zarr.open(filename_without_extensions + f"_skoots_vectors.zarr", mode='w', shape=(3,x,y,z), dtype="|f2")
 
     # skeleton = torch.zeros(size=(1, x, y, z), dtype=torch.uint8)
     # vectors = torch.zeros((3, x, y, z), dtype=torch.half)
@@ -134,8 +125,6 @@ def eval(
 
     id = 1
     for crop, (x, y, z) in iterator:
-        if used_cached_data: continue  # skip... dont do anything
-
         crop = crop.sub(dataset_mean).div(dataset_std)
 
         # logging.debug(f'{crop.mean()=}, {crop.std()=}, {crop.max()=}, {crop.min()=}')
@@ -146,14 +135,14 @@ def eval(
         skeleton_map = out[:, [-2], ...].float()
         vec = out[:, 0:3:1, ...]
 
-        vec = vec * probability_map.gt(0.8)
-        skeleton_map = skeleton_map * probability_map.gt(0.8)
+        vec = vec * probability_map.gt(0.5)
+        skeleton_map = skeleton_map * probability_map.gt(0.5)
 
         for _ in range(
             1
         ):  # expand the skeletons in x/y/z. Only  because they can get too skinny
             skeleton_map = binary_dilation(skeleton_map)
-            for _ in range(2):  # expand 2 times just in x/y
+            for _ in range(3):  # expand 2 times just in x/y
                 skeleton_map = binary_dilation_2d(skeleton_map)
 
         # put the predictions into the preallocated tensors...
@@ -176,6 +165,17 @@ def eval(
         skeleton[_destination] = skeleton_map[_source].gt(0.8).cpu().numpy()
 
         iterator.desc = f"Evaluating UNet on slice [x{x}:y{y}:z{z}]"
+
+    # _x, _y, _z
+    # if pad3d:
+    #     _, padx, pady, padz = pad3d
+    #
+    #     skeleton = skeleton[0, padx[0]:-padx[1], pady[0]:-pady[1], padz[0]:-padz[1]]
+    #     vectors = vectors[:, padx[0]:-padx[1], pady[0]:-pady[1], padz[0]:-padz[1]]
+    #
+    # else:
+    #     skeleton = skeleton[0, ...]
+    #     vectors = vectors[:, ...]
 
     del image  # we don't need the image anymore
 
@@ -269,7 +269,7 @@ def eval(
         )
 
         _embed = skoots.lib.vector_to_embedding.vector_to_embedding(
-            scale=vector_scale, vector=_vec, N=10
+            scale=vector_scale, vector=_vec, N=10, decay=0.95
         )
         _embed += torch.tensor((x, y, z)).view(
             1, 3, 1, 1, 1
@@ -321,17 +321,57 @@ def eval(
 
 
 if __name__ == "__main__":
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/hide_validate-1.tif'
-    image_path = "/home/chris/Documents/threeOHC_registered_8bit_cell2.tif"
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Fig X - compare to affinity/data/hide_validate.tif'
-    # image_path = '/home/chris/Documents/threeOHC_registered_8bit.tif'
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/onemito.tif'
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/outputs/cell_apex-1.tif'
-    # image_path = '/home/chris/Dropbox (Partners HealthCare)/Manuscripts - Buswinka/Mitochondria Segmentation/Figures/Figure X6X  - Whole image analysis/crop.tif'
-    import time
+    import argparse
+    import glob
+    # Eval
 
-    t1 = time.time()
-    eval(image_path)
-    t2 = time.time()
+    parser = argparse.ArgumentParser(
+        prog="SKOOTS - experimental",
+        description="skoots parameters",
+    )
 
-    print(f"TOOK {t1 - t2} seconds")
+    # general script arguments
+    eval_args = parser.add_argument_group("eval arguments")
+    eval_args.add_argument("--image", type=str, help="path to image")
+    eval_args.add_argument(
+        "--pretrained-checkpoint",
+        type=str,
+        help="path to a pretrained skoots model. Will be used"
+        "as a starting point for training",
+    )
+
+    eval_args.add_argument(
+        "--log",
+        type=int,
+        default=3,
+        help="Log Level: 0-Debug, 1-Info, 2-Warning, 3-Error, 4-Critical",
+    )
+
+    _log_map = [
+        logging.DEBUG,
+        logging.INFO,
+        logging.WARNING,
+        logging.ERROR,
+        logging.CRITICAL,
+    ]
+
+    # accessory script arguments
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=_log_map[args.log],
+        format="[%(asctime)s] skoots-eval [%(levelname)s]: %(message)s",
+    )
+
+
+    if args.pretrained_checkpoint == 'base':
+        args.pretrained_checkpoint = "/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/models/mito/Mar28_16-26-14_CHRISUBUNTU.trch"
+
+    if os.path.isdir(args.image):
+        files = glob.glob(args.image + "/*.tif")
+        files.sort()
+    else:
+        files = [args.image]
+
+    for f in files:
+        eval(f, args.pretrained_checkpoint)

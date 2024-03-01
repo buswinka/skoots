@@ -1,10 +1,12 @@
 from typing import Tuple, List, Optional
 
+import numpy as np
 from torch import Tensor
+import torch
 
 
 def get_total_num_crops(
-    image_shape: Tensor, crop_size: List[int], overlap: Optional[Tuple[int]]
+        image_shape: Tensor, crop_size: List[int], overlap: Optional[Tuple[int]]
 ) -> int:
     total = 0
 
@@ -21,7 +23,7 @@ def get_total_num_crops(
     dim = ["x", "y", "z"]
     for c, o, d in zip(crop_size, overlap, dim):
         assert (
-            c - o * 2 != 0
+                c - o * 2 != 0
         ), f"Overlap in {d} dimmension cannot be equal to or larger than crop size... {o*2=} < {c}"
 
     x = 0
@@ -54,10 +56,10 @@ def get_total_num_crops(
 
 
 def crops(
-    image: Tensor,
-    crop_size: List[int],
-    overlap: Optional[Tuple[int, int, int]] = (0, 0, 0),
-    device="cpu",
+        image: Tensor,
+        crop_size: List[int],
+        overlap: Optional[Tuple[int, int, int]] = (0, 0, 0),
+        device="cpu",
 ) -> Tuple[Tensor, List[int]]:
     """
     Generator which takes an image and sends out crops of a certain size with overlap pixels
@@ -88,7 +90,7 @@ def crops(
     dim = ["x", "y", "z"]
     for c, o, d in zip(crop_size, overlap, dim):
         assert (
-            c - (o * 2) != 0
+                c - (o * 2) != 0
         ), f"Overlap in {d} dimmension cannot be equal to or larger than crop size... {c=} - {o*2=} = {c - (o * 2)} < {c}"
 
     # for i in range(image_shape[1] // cropsize[1] + 1):
@@ -115,17 +117,20 @@ def crops(
                     else image_shape[3] - crop_size[2]
                 )
 
+                _tocache = image[
+                           :,
+                           _x: _x + crop_size[0],
+                           _y: _y + crop_size[1],
+                           _z: _z + crop_size[2],
+                           ]
+                _tocache = torch.from_numpy(_tocache) if isinstance(_tocache, np.ndarray) else _tocache
+
                 _output_cache.append(
                     (
-                        image[
-                            :,
-                            _x : _x + crop_size[0],
-                            _y : _y + crop_size[1],
-                            _z : _z + crop_size[2],
-                        ]
-                        .unsqueeze(0)
+                        _tocache.unsqueeze(0)
                         .to(device, non_blocking=True),
                         [_x, _y, _z],
+
                     )
                 )
 

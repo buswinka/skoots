@@ -1,7 +1,7 @@
 import math
 import random
 from copy import deepcopy
-from typing import Dict, Tuple, Union, List, Optional, Callable
+from typing import Dict, Tuple, Union, List, Optional, Callable, Any
 
 import torch
 import torch.nn.functional as F
@@ -15,84 +15,85 @@ from torch import Tensor
 from yacs.config import CfgNode
 
 import logging
+import random
 
 def elastic_deform(
-        image: Tensor,
-        mask: Tensor,
+        *args,
         skeleton: Dict[int, Tensor],
         displacement_shape: Tuple[int, int, int] = (6, 6, 2),
-        max_displacement: float = 0.2,
-) -> Tuple[Tensor, Tensor, Dict[int, Tensor]]:
+        displacement_magnitude: Tuple[float,float,float] = (0.05, 0.05, 0.01),
+) -> Tuple[Tensor, Any, Dict[int, Tensor]]:
     """
     Randomly creates a deformation grid and applies to image, mask, and skeletons
 
-    :param image: Tensor
-    :param mask:  Tensor
+    :param args: Tensors of shape [1, 1, X, Y, Z]
     :param skeleton:  Dict[int, Tensor[3, N]]
+
     :param displacement_shape: Tuple of len 3
     :param max_displacement: float between 0 and 1
     :return:
     """
+    assert len(args) > 0, f'must pass at least one positional argument'
 
-    assert image.shape == mask.shape, "image and mask shape must be the same"
-    assert image.ndim == 5, f"image must be in shape: [B, C, X, Y, Z], not {image.shape}"
-    assert image.device == mask.device
+    shape = args[0].shape
+
+    for i, a in enumerate(args):
+        assert isinstance(a, Tensor), f'positional argument {i} must be of type torch.Tensor not {type(a)}'
+        assert a.shape == shape, f'positional argument {i} must be of {shape=} not {a.shape}'
+
+    # assert image.shape == mask.shape, "image and mask shape must be the same"
+    assert args[0].ndim == 5, f"image must be in shape: [B, C, X, Y, Z], not {args[0].shape}"
+    assert args[0].device == args[0].device
     assert (
             len(displacement_shape) == 3
     ), "displacement_shape must be a tuple of integers with len == 3"
-    assert max_displacement < 1.0, "max displacement must not exceed 1.0"
+    assert (
+            len(displacement_magnitude) == 3
+    ), "displacement_magnitude must be a tuple of integers with len == 3"
+    assert max(displacement_magnitude) < 1.0, "max displacement must not exceed 1.0"
 
     # for k, v in skeleton.items():
     #     assert v.shape[1] == 3, f'skeleton shape wrong: {v.shape}'
 
-    device = image.device
+    device = args[0].device
 
-    b, c, x, y, z = image.shape
+    b, c, x, y, z = args[0].shape
+
+    displacement_shape = (1, 3, displacement_shape[2], displacement_shape[1], displacement_shape[0])
+    displacement_magnitude = tuple(reversed(displacement_magnitude))
 
     # offset are the random directon vectors
     offset: Tensor = (
         F.interpolate(
-            torch.rand((1, 3, 2, 2, 2), device=device), (x, y, z), mode="trilinear"
+            torch.rand(displacement_shape, device=device), (x, y, z), mode="trilinear"
         ).permute((0, 2, 3, 4, 1)).mul(
-            torch.tensor((0.05, 0.2, 0.2), device=device).view(1, 1, 1, 1, 3)
+            torch.tensor(displacement_magnitude, device=device).view(1, 1, 1, 1, 3)
         )
 
     )
 
-    # base_grid is the identity grid. Applying base_grid alone will result in an identical image as input
-    base_grid: Tensor = torch.stack(
-        (
-            torch.linspace(-1, 1, z, dtype=torch.float, device=device)
-            .unsqueeze(0)
-            .unsqueeze(0)
-            .repeat(x, y, 1),
-            torch.linspace(-1, 1, y, dtype=torch.float, device=device)
-            .unsqueeze(0)
-            .unsqueeze(-1)
-            .repeat(x, 1, z),
-            torch.linspace(-1, 1, x, dtype=torch.float, device=device)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
-            .repeat(1, y, z),
-        ),
-        dim=-1,
-    ).unsqueeze(0)
+    # Identity grid
+    d3 = torch.linspace(-1, 1, z, device=device)
+    d2 = torch.linspace(-1, 1, y, device=device)
+    d1 = torch.linspace(-1, 1, x, device=device)
+    meshx, meshy, meshz = torch.meshgrid((d1, d2, d3), indexing='ij')
+    base_grid = torch.stack((meshz, meshy, meshx), 3)
+    base_grid = base_grid.unsqueeze(0)  # add batch dim
 
+    # apply stochastic offset
     grid = (base_grid + offset).float()
 
-    io.imsave('/home/chris/Desktop/grid.tif', grid.squeeze().permute(2, 0, 1, 3).cpu().numpy())
-
     # apply the deformation
-    image = F.grid_sample(image.float(), grid.float(), align_corners=True, mode='nearest')
-    mask = F.grid_sample(mask.float(), grid.float(), align_corners=True, mode='nearest')
+    out: List[Tensor, ...] = []
+    for i, a in enumerate(args):
+        out.append(F.grid_sample(a.float(), grid.float(), align_corners=True, mode='nearest'))
 
-    # remap grid from -1->1 to 0->shape
-    # grid = (base_grid - offset).float()
+    # grid_sample uses the grid in reverse (out x,y,z looks at grid x,y,z to know.
+    # This means we now have to subtract offest)
+    grid = (base_grid - offset).float()
     grid = grid.add(1).div(2).mul(
         torch.tensor((z, y, x), device=device).view(1, 1, 1, 1, 3)
     )
-    print(f'{grid[0,34,54,22,:]=}')
-
     for k, skel in skeleton.items():
         sx: Tensor = skel[:, 0].long()
         sy: Tensor = skel[:, 1].long()
@@ -106,13 +107,11 @@ def elastic_deform(
         ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3
 
         # grid last dim is Z, Y, X for some reason
-        print(skel)
         skel[ind, :] = grid[0, sx[ind], sy[ind], sz[ind], :][:, [2, 1, 0]]
-        print(skel)
 
         skeleton[k] = skel
 
-    return image, mask, skeleton
+    return (*out, skeleton)
 
 
 @torch.jit.script
@@ -369,6 +368,10 @@ class TransformFromCfg(nn.Module):
         self.AFFINE_SHEAR = cfg.AUGMENTATION.AFFINE_SHEAR
         self.AFFINE_YAW = cfg.AUGMENTATION.AFFINE_YAW
 
+        self.ELASTIC_GRID_SHAPE = cfg.AUGMENTATION.ELASTIC_GRID_SHAPE
+        self.ELASTIC_GRID_MAGNITUDE = cfg.AUGMENTATION.ELASTIC_GRID_MAGNITUDE
+        self.ELASTIC_RATE = cfg.AUGMENTATION.ELASTIC_RATE
+
         self.BAKE_SKELETON_ANISOTROPY = cfg.AUGMENTATION.BAKE_SKELETON_ANISOTROPY
 
         self._center = None
@@ -376,6 +379,14 @@ class TransformFromCfg(nn.Module):
 
     def _identity(self, *args):
         return args if len(args) > 1 else args[0]
+
+    def _elastic(self, image, masks, skeletons):
+        image = image.unsqueeze(0)
+        masks = masks.unsqueeze(0)
+
+        image, masks, skeletons = elastic_deform(image, masks, skeleton=skeletons)
+
+        return image.squeeze(0), masks.squeeze(0), skeletons
 
     def _crop1(self, image, masks, skeletons):
         # ------------ Random Crop 1
@@ -416,18 +427,19 @@ class TransformFromCfg(nn.Module):
         y1 = y0 + h
         z1 = z0 + d
 
-        image = image[:, x0: x1, y0: y1, z0: z1]
-        masks = masks[:, x0: x1, y0: y1, z0: z1]
+        image = image[:, x0: x1, y0: y1, z0: z1].clone()
+        masks = masks[:, x0: x1, y0: y1, z0: z1].clone()
 
         # Correct the skeleton positions
-        unique = torch.unique(masks)
-        if -1 not in skeletons:
-            keys = list(skeletons.keys())
-            for k in keys:
-                if not torch.any(unique == k):
-                    skeletons.pop(k)
-                else:
-                    skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=self.DEVICE)
+        new_skel = {}
+        keys = list(skeletons.keys())
+        for k in keys:
+            new = skeletons[k].sub(torch.tensor([x0, y0, z0], device=image.device)).float()
+
+
+            if new.device != self.DEVICE:
+                new = new.to(self.DEVICE)
+            new_skel[k] = new
 
         # send to device
         if image.device != self.DEVICE:
@@ -436,33 +448,20 @@ class TransformFromCfg(nn.Module):
         if masks.device != self.DEVICE:
             masks = masks.to(self.DEVICE)
 
-        for k, v in skeletons.items():
-            skeletons[k] = v.float().to(self.DEVICE)
-
-        return image, masks, skeletons
+        return image, masks, new_skel
 
     def _affine(self, image, masks, skeletons):
-        angle = (self.AFFINE_YAW[1] - self.AFFINE_YAW[0]) * torch.rand(
-            1, device=self.DEVICE
-        ) + self.AFFINE_YAW[0]
-        shear = (self.AFFINE_SHEAR[1] - self.AFFINE_SHEAR[0]) * torch.rand(
-            1, device=self.DEVICE
-        ) + self.AFFINE_SHEAR[0]
-        scale = (self.AFFINE_SCALE[1] - self.AFFINE_SCALE[0]) * torch.rand(
-            1, device=self.DEVICE
-        ) + self.AFFINE_SCALE[0]
-
-        # shear = torch.tensor((35), device=DEVICE)
-        # angle = torch.tensor((45), device=DEVICE)
-        # scale = torch.tensor((1), device=DEVICE)
+        angle = random.uniform(*self.AFFINE_YAW)
+        shear = random.uniform(*self.AFFINE_SHEAR)
+        scale = random.uniform(*self.AFFINE_SCALE)
 
         mat: Tensor = _get_affine_matrix(
             center=[image.shape[1] / 2, image.shape[2] / 2],
-            angle=-angle.item(),
+            angle=-angle,
             translate=[0.0, 0.0],
-            scale=scale.item(),
-            shear=[0.0, float(shear.item())],
-            device=str(image.device),
+            scale=scale,
+            shear=[0.0, shear],
+            device=self.DEVICE,
         )  # Rotate the skeletons by the affine matrix
 
         for k, v in skeletons.items():
@@ -476,69 +475,21 @@ class TransformFromCfg(nn.Module):
 
         image = ttf.affine(
             image.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=float(shear.item()),
-            scale=scale.item(),
+            angle=angle,
+            shear=float(shear),
+            scale=scale,
             translate=[0, 0],
         ).permute(0, 2, 3, 1)
-
-        # unique_before = masks.unique().long().sub(1)
-        # unique_before = unique_before[unique_before.ge(0)]
 
         masks = ttf.affine(
             masks.permute(0, 3, 1, 2).float(),
-            angle=angle.item(),
-            shear=float(shear.item()),
-            scale=scale.item(),
+            angle=angle,
+            shear=float(shear),
+            scale=scale,
             translate=[0, 0],
         ).permute(0, 2, 3, 1)
 
-        unique_after = masks.unique().long().sub(1)
-        unique_after = unique_after[unique_after.ge(0)]
-
-        skeletons = {
-            k: v for k, v in skeletons.items() if torch.any(unique_after.eq(k - 1))
-        }
-
         return image, masks, skeletons
-        # angle = random.uniform(*self.AFFINE_YAW)
-        # shear = random.uniform(*self.AFFINE_YAW)
-        # scale = random.uniform(*self.AFFINE_SCALE)
-        #
-        # mat: Tensor = _get_affine_matrix(
-        #     center=[image.shape[1] / 2, image.shape[2] / 2],
-        #     angle=-angle,
-        #     translate=[0.0, 0.0],
-        #     scale=scale,
-        #     shear=[0.0, shear],
-        #     device=str(image.device),
-        # )  # Rotate the skeletons by the affine matrix
-        #
-        # if -1 not in skeletons:
-        #     for k, v in skeletons.items():
-        #         skeleton_xy = v[:, [0, 1]].permute(1, 0).unsqueeze(0)  # [N, 3] -> [1, 2, N]
-        #         _ones = torch.ones((1, 1, skeleton_xy.shape[-1]), device=self.DEVICE)  # [1, 1, N]
-        #         skeleton_xy = torch.cat((skeleton_xy, _ones), dim=1)  # [1, 3, N]
-        #         rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
-        #         skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
-        #
-        # image = ttf.affine(
-        #     image.permute(0, 3, 1, 2).float(),
-        #     angle=angle,
-        #     shear=[float(shear)],
-        #     scale=scale,
-        #     translate=[0, 0],
-        # ).permute(0, 2, 3, 1)
-        #
-        # masks = ttf.affine(
-        #     masks.permute(0, 3, 1, 2).float(),
-        #     angle=angle,
-        #     shear=[float(shear)],
-        #     scale=scale,
-        #     translate=[0, 0],
-        # ).permute(0, 2, 3, 1)
-        #
-        # return image, masks, skeletons
 
     def _crop2(self, image, masks, skeletons):
         C, X, Y, Z = image.shape
@@ -577,16 +528,11 @@ class TransformFromCfg(nn.Module):
         image = image[:, x0:x1, y0:y1, z0:z1]
         masks = masks[:, x0:x1, y0:y1, z0:z1]
 
-        unique = torch.unique(masks)
-        if -1 not in skeletons:
-            keys = list(skeletons.keys())
-            for k in keys:
-                if not torch.any(unique == k):
-                    skeletons.pop(k)
-                else:
-                    skeletons[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=self.DEVICE)
+        new_skel = {}
+        for k in skeletons.keys():
+            new_skel[k] = skeletons[k] - torch.tensor([x0, y0, z0], device=self.DEVICE)
 
-        return image, masks, skeletons
+        return image, masks, new_skel
 
     def _flipX(self, image, masks, skeletons):
         image = image.flip(1)
@@ -615,19 +561,23 @@ class TransformFromCfg(nn.Module):
         return image, masks
 
     def _invert(self, image, masks):
-        image.sub_(1).mul_(-1)
+        image.sub_(255).mul_(-1)
+
         return image, masks
 
     def _brightness(self, image, masks):
         val = random.uniform(*self.BRIGHTNESS_RANGE)
         # in place ok because flip always returns a copy
         image = image.add(val)
+        image = image.clamp(0, 255)
         return image, masks
 
     def _contrast(self, image, masks):
         contrast_val = random.uniform(*self.CONTRAST_RANGE)
         # [ C, X, Y, Z ] -> [Z, C, X, Y]
+        image = image.div(255)
         image = ttf.adjust_contrast(image.permute(3, 0, 1, 2), contrast_val).permute(1, 2, 3, 0)
+        image = image.mul(255)
 
         return image, masks
 
@@ -643,6 +593,7 @@ class TransformFromCfg(nn.Module):
         std = image.float().std() if not self.dataset_std else self.dataset_std
 
         image = image.float().sub(mean).div(std)
+
         return image, masks
 
     def set_dataset_mean(self, mean):
@@ -668,7 +619,7 @@ class TransformFromCfg(nn.Module):
 
         masks = data_dict["masks"]
         image = data_dict["image"]
-        skeletons = deepcopy(data_dict["skeletons"])
+        skeletons = data_dict["skeletons"]
 
         spatial_dims = masks.ndim - 1
 
@@ -678,8 +629,9 @@ class TransformFromCfg(nn.Module):
         # scale: int = 2 ** 16 if image.max() > 256 else 255  # Our images might be 16 bit, or 8 bit
         # scale = scale if image.max() > 1 else 1.0
 
-        logging.debug("TransformFromCfg.forward() | normalizing")
-        image, masks = self._normalize(image, masks)
+
+        if random.random() < self.ELASTIC_RATE:
+            image, masks, skeletons = self._elastic(image, masks, skeletons)
 
         # affine
         if random.random() < self.AFFINE_RATE:
@@ -725,6 +677,9 @@ class TransformFromCfg(nn.Module):
             logging.debug("TransformFromCfg.forward() | adding noise")
             image, masks = self._noise(image, masks)
 
+        logging.debug(f"TransformFromCfg.forward() | normalizing with {self.dataset_mean=}, {self.dataset_std=}")
+        image, masks = self._normalize(image, masks)
+
         if spatial_dims == 2:
             image = image[..., 0]
             masks = masks[..., 0]
@@ -745,7 +700,9 @@ class TransformFromCfg(nn.Module):
         data_dict["skele_masks"]: Tensor = skeleton_to_mask(
             skeletons,
             (x, y, z),
-            device=self.DEVICE
+            device=self.DEVICE,
+            radius=self.cfg.TRAIN.SKELETON_MASK_RADIUS,
+            flank_radius=self.cfg.TRAIN.SKELETON_MASK_FLANK_RADIUS
             # kernel_size=cfg.AUGMENTATION.SMOOTH_SKELETON_KERNEL_SIZE,
             # n=cfg.AUGMENTATION.N_SKELETON_MASK_DILATE,
         )
@@ -1786,13 +1743,12 @@ if __name__ == "__main__":
         ).astype(float)
     )
 
-    img = img[:, 850:1100, 690:890].permute(1, 2, 0)
-    mask = mask[:, 850:1100, 690:890].permute(1, 2, 0)
+    img = img[:, 650:1100, 390:890].permute(1, 2, 0)
+    mask = mask[:, 650:1100, 390:890].permute(1, 2, 0)
 
     skeletons = skoots.train.generate_skeletons.calculate_skeletons(mask, torch.tensor((0.3, 0.3, 1.0)))
 
     x, y, z = img.shape
-
     img = img.view(1, 1, x, y, z)
     mask = mask.view(1, 1, x, y, z)
 
@@ -1803,15 +1759,11 @@ if __name__ == "__main__":
     img, mask, skeletons = elastic_deform(img, mask, skeletons)
 
     skl_msk = skeleton_to_mask(skeletons, (x, y, z))
-
-    plt.imshow(og[0, 0, :, :, 14])
+    Z = 14
+    plt.imshow(og[0, 0, :, :, Z], cmap='turbo')
+    plt.imshow(og_skl[0, :, :, Z], alpha=0.3, cmap='gray')
     plt.show()
 
-    plt.imshow(og_skl[0, :, :, 14])
-    plt.show()
-
-    plt.imshow(img[0, 0, :, :, 14])
-    plt.show()
-
-    plt.imshow(skl_msk[0, :, :, 14])
+    plt.imshow(img[0, 0, :, :, Z], cmap='turbo')
+    plt.imshow(skl_msk[0, :, :, Z], alpha=0.3, cmap='gray')
     plt.show()

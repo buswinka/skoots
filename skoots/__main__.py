@@ -25,6 +25,12 @@ def main():
     )
 
     eval_args.add_argument(
+        '--use-cached',
+        action='store_true',
+        help='skips model evaluation and loads previously evaluated zarr array with consistent naming conventions'
+    )
+
+    eval_args.add_argument(
         "--log",
         type=int,
         default=3,
@@ -94,6 +100,7 @@ def main():
     # accessory scripts
     if args.skeletonize_train_data:
         downscale = (args.anisotropyXY, args.anisotropyXY, args.anisotropyZ)
+        print('skeletonizing...')
         skoots.train.generate_skeletons.create_gt_skeletons(
             args.skeletonize_train_data, args.mask_filter, downscale
         )

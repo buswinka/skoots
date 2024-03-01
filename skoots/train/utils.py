@@ -157,17 +157,17 @@ def write_progress(
     _overlay = mask_overlay(_b[[0], ...], probability_map[0, :, :, :, 7].cpu())
     _c = _overlay.mul(255).round().type(torch.uint8).cpu()
 
-    if skeleton:
-        for k in skeleton[0]:  # List[Dict[str, Tensor]]
-            keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
-            _c = draw_keypoints(_c, keypoints, colors="blue", radius=1)
+    # if skeleton:
+    #     for k in skeleton[0]:  # List[Dict[str, Tensor]]
+    #         keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
+    #         _c = draw_keypoints(_c, keypoints, colors="blue", radius=1)
 
     _d = flow_to_image(vector[0, [1, 0], :, :, 7].float()).cpu()
-    if skeleton:
-        for k in skeleton[0]:  # List[Dict[str, Tensor]]
-            keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
-            _d = draw_keypoints(_d, keypoints, colors="blue", radius=1)
-
+    # if skeleton:
+    #     for k in skeleton[0]:  # List[Dict[str, Tensor]]
+    #         keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
+    #         _d = draw_keypoints(_d, keypoints, colors="blue", radius=1)
+    #
     # print(out.shape)
     out: List[Tensor] = (
         [out[[0], ...]] if not isinstance(out, list) else out
@@ -184,10 +184,10 @@ def write_progress(
         _g = torch.concat((_g, _g, _g), dim=0).mul(255).round().type(torch.uint8)
         # print(_g.shape)
         assert _g.ndim == 3, f"{_g.shape=}"
-        if skeleton is not None:
-            for k in skeleton[0]:  # List[Dict[str, Tensor]]
-                keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
-                _g = draw_keypoints(_g, keypoints, colors="blue", radius=1)
+        # if skeleton is not None:
+        #     for k in skeleton[0]:  # List[Dict[str, Tensor]]
+        #         keypoints: Tensor = skeleton[0][k][:, [1, 0]].unsqueeze(1)
+        #         _g = draw_keypoints(_g, keypoints, colors="blue", radius=1)
         img_list.append(_g)
 
     if gt_skeleton is not None:

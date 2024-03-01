@@ -1,36 +1,35 @@
-import os
-import os.path
+import datetime
+import logging
+import sys
 from functools import partial
 from statistics import mean
-from typing import Callable, Union, Dict
+from typing import Callable, Union
 
-import skoots.train.loss
+import bism.utils
 import torch
+import torch.distributed
 import torch.nn as nn
 import torch.optim.lr_scheduler
 import torch.optim.swa_utils
-import bism.utils
-from skoots.lib.embedding_to_prob import baked_embed_to_prob
-from skoots.lib.vector_to_embedding import vector_to_embedding
-from skoots.train.dataloader import dataset, MultiDataset, skeleton_colate
-from skoots.train.merged_transform import (
-    TransformFromCfg,
-    BackgroundTransformFromCfg,
-)
-from skoots.train.setup import setup_process
-from skoots.train.sigma import Sigma, init_sigma
-from skoots.train.utils import write_progress
 from torch import Tensor
-from torch import profiler
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 from yacs.config import CfgNode
-import sys
-import datetime
 
-import logging
+import skoots.experimental.modifiers
+import skoots.train.loss
+from skoots.experimental.sparse_dataloader import SparseDataloader, sparse_colate
+from skoots.experimental.sparse_loss import sparse_loss
+from skoots.experimental.sparse_transforms import SparseTransformFromCfg
+from skoots.lib.embedding_to_prob import baked_embed_to_prob
+from skoots.lib.vector_to_embedding import vector_to_embedding
+from skoots.train.dataloader import MultiDataset, dataset, skeleton_colate
+from skoots.train.merged_transform import TransformFromCfg
+from skoots.train.setup import setup_process
+from skoots.train.sigma import Sigma, init_sigma
+from skoots.train.utils import write_progress
 
 Dataset = Union[Dataset, DataLoader]
 
@@ -101,28 +100,30 @@ def train(
     if int(rank) == 0:
         print(cfg)
 
-    if int(torch.__version__[0]) >= 2 and cfg.MODEL.COMPILE:
+    logging.info(f"{str(cfg)}")
+
+    if int(torch.__version__[0]) >= 2:
         logging.info("Compiling model with torch inductor")
         model = torch.compile(base_model)
-    else:
-        model = base_model
+    model = base_model
 
     augmentations = (
-        TransformFromCfg(
+        SparseTransformFromCfg(
             cfg=cfg,
             device=device
-            if cfg.TRAIN.TRANSFORM_DEVICE == "default"
-            else torch.device(cfg.TRAIN.TRANSFORM_DEVICE),
+            if cfg.TRAIN.DATALOADER_OUTPUT_DEVICE == "default"
+            else torch.device(cfg.TRAIN.DATALOADER_OUTPUT_DEVICE),
         )
         .set_dataset_std(255)
         .set_dataset_mean(0)
     )
-    background_augmentations = (
-        BackgroundTransformFromCfg(
+
+    val_augmentations = (
+        TransformFromCfg(
             cfg=cfg,
             device=device
-            if cfg.TRAIN.TRANSFORM_DEVICE == "default"
-            else torch.device(cfg.TRAIN.TRANSFORM_DEVICE),
+            if cfg.TRAIN.DATALOADER_OUTPUT_DEVICE == "default"
+            else torch.device(cfg.TRAIN.DATALOADER_OUTPUT_DEVICE),
         )
         .set_dataset_std(255)
         .set_dataset_mean(0)
@@ -146,56 +147,62 @@ def train(
     ):
         _device = device if on_cuda else "cpu"
         _datasets.append(
-            dataset(
+            SparseDataloader(
                 path=path,
                 transforms=augmentations,
                 sample_per_image=N,
                 device=device
                 if cfg.TRAIN.DATALOADER_OUTPUT_DEVICE == "default"
                 else torch.device(cfg.TRAIN.DATALOADER_OUTPUT_DEVICE),
-            ).to(_device)
+            )
+            .pin_memory()
+            .to(_device)
         )
-
-    for path, N, on_cuda in zip(
-        cfg.TRAIN.BACKGROUND_DATA_DIR,
-        cfg.TRAIN.BACKGROUND_SAMPLE_PER_IMAGE,
-        cfg.TRAIN.BACKGROUND_STORE_DATA_ON_GPU,
-    ):
-        _device = device if on_cuda else "cpu"
-        _datasets.append(
-            dataset(
-                path=path,
-                transforms=background_augmentations,
-                sample_per_image=N,
-                device=device
-                if cfg.TRAIN.DATALOADER_OUTPUT_DEVICE == "default"
-                else torch.device(cfg.TRAIN.DATALOADER_OUTPUT_DEVICE),
-            ).to(_device)
-        )
-
-    logging.info("Completed Training DataLoading")
     merged_train = MultiDataset(*_datasets)
 
+    # erode background
+    merged_train = merged_train.map(
+        partial(
+            skoots.experimental.modifiers.erode_bg_masks,
+            n_erode=round(cfg.EXPERIMENTAL.BACKGROUND_N_ERODE),
+            log=True,
+        ),
+        "background",
+    )
+
+    # ablate background
+    merged_train = merged_train.map(
+        partial(
+            skoots.experimental.modifiers.ablate_bg_masks,
+            alpha=cfg.EXPERIMENTAL.BACKGROUND_SLICE_PERCENTAGE,
+            log=True,
+        ),
+        "background",
+    )
     dataset_mean = merged_train.mean(with_invert=True)
     dataset_std = merged_train.std(with_invert=True)
+
     logging.info(
         f"Normalizing to dataset: mean->{dataset_mean:0.3f}, std->{dataset_std:0.3f}"
     )
-
     augmentations = augmentations.set_dataset_mean(dataset_mean).set_dataset_std(
         dataset_std
     )
+    val_augmentations = val_augmentations.set_dataset_mean(
+        dataset_mean
+    ).set_dataset_std(dataset_std)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(merged_train)
+    _n_workers = 0  # if _device != 'cpu' else 2
     dataloader = DataLoader(
         merged_train,
         num_workers=cfg.TRAIN.DATALOADER_NUM_WORKERS,
+        batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
+        sampler=train_sampler,
         prefetch_factor=cfg.TRAIN.DATALOADER_PREFETCH_FACTOR
         if cfg.TRAIN.DATALOADER_PREFETCH_FACTOR
         else None,
-        batch_size=cfg.TRAIN.TRAIN_BATCH_SIZE,
-        sampler=train_sampler,
-        collate_fn=skeleton_colate,
+        collate_fn=sparse_colate,
     )
 
     # Validation Dataset
@@ -209,7 +216,7 @@ def train(
         _datasets.append(
             dataset(
                 path=path,
-                transforms=augmentations,
+                transforms=val_augmentations,
                 sample_per_image=N,
                 device=device
                 if cfg.TRAIN.DATALOADER_OUTPUT_DEVICE == "default"
@@ -220,6 +227,7 @@ def train(
         )
 
     merged_validation = MultiDataset(*_datasets)
+
     test_sampler = torch.utils.data.distributed.DistributedSampler(merged_validation)
     if _datasets or cfg.TRAIN.VALIDATION_BATCH_SIZE >= 1:
         _n_workers = 0  # if _device != 'cpu' else 2
@@ -227,10 +235,10 @@ def train(
         valdiation_dataloader = DataLoader(
             merged_validation,
             num_workers=cfg.TRAIN.DATALOADER_NUM_WORKERS,
+            batch_size=cfg.TRAIN.VALIDATION_BATCH_SIZE,
             prefetch_factor=cfg.TRAIN.DATALOADER_PREFETCH_FACTOR
             if cfg.TRAIN.DATALOADER_PREFETCH_FACTOR
             else None,
-            batch_size=cfg.TRAIN.TRAIN_BATCH_SIZE,
             sampler=test_sampler,
             collate_fn=skeleton_colate,
         )
@@ -238,13 +246,12 @@ def train(
     else:  # we might not want to run validation...
         valdiation_dataloader = None
 
-    logging.info("Completed Validation DataLoading")
-
     torch.backends.cudnn.benchmark = cfg.TRAIN.CUDNN_BENCHMARK
     torch.autograd.profiler.profile = cfg.TRAIN.AUTOGRAD_PROFILE
     torch.autograd.profiler.emit_nvtx(enabled=cfg.TRAIN.AUTOGRAD_EMIT_NVTX)
-    torch.autograd.set_detect_anomaly(cfg.TRAIN.AUTOGRAD_DETECT_ANOMALY)
+    torch.autograd.set_detect_anomaly(True)
 
+    logging.info("initalized sigma")
     sigma: Sigma = init_sigma(cfg, device)
     epochs = cfg.TRAIN.NUM_EPOCHS
 
@@ -257,7 +264,12 @@ def train(
         store.set("test", "test")
         logging.info("cached writer_log_dir in HashStore().")
     else:
-        writer = None  # TRAIN LOOP ----------------------------
+        writer = None
+
+    store.wait(["writer_log_dir", "test"])
+    logging.critical(f'log_dir: {store.get("writer_log_dir")}')
+
+    # TRAIN LOOP ----------------------------
 
     vector_scale = torch.tensor(cfg.SKOOTS.VECTOR_SCALING, device=device)
 
@@ -268,36 +280,17 @@ def train(
         )
     }
     logging.info("creating optimizer")
-    optimizer: torch.optim.Optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](
+    optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](
         model.parameters(),
         lr=cfg.TRAIN.LEARNING_RATE,
         weight_decay=cfg.TRAIN.WEIGHT_DECAY,
         **kwargs,
     )
 
-
-    if cfg.TRAIN.LOAD_PRETRAINED_OPTIMIZER and cfg.TRAIN.PRETRAINED_MODEL_PATH:
-        pretrained: Dict[str, any] = torch.load(
-            cfg.TRAIN.PRETRAINED_MODEL_PATH[0], map_location="cpu"
-        )
-        pretrained_cfg: CfgNode = pretrained["cfg"]
-        if pretrained_cfg.TRAIN.OPTIMIZER == cfg.TRAIN.OPTIMIZER:
-            optim_state_dict = pretrained["optimizer_state_dict"]
-            optimizer.load_state_dict(optim_state_dict)
-
-    @torch.compile(fullgraph=False)
-    def optimizer_step():
-        optimizer.step()
-
-    for _ in range(5):
-        optimizer_step()
-
-
     logging.info("creating scheduler")
     scheduler = _valid_lr_schedulers[cfg.TRAIN.SCHEDULER](
         optimizer, T_0=cfg.TRAIN.SCHEDULER_T0
     )
-
     logging.info("creating grad scaler")
     scaler = GradScaler(enabled=cfg.TRAIN.MIXED_PRECISION)
 
@@ -342,54 +335,19 @@ def train(
 
     # Warmup... Get the first from train_data
     logging.info("generating warmup data")
+    images = None
     for images, masks, skeleton, skele_masks, baked in dataloader:
-        images = images.to(device, non_blocking=True)
-        masks = masks.to(device, non_blocking=True)
-        skele_masks = skele_masks.to(device, non_blocking=True)
-        baked = baked.to(device, non_blocking=True)
         break
 
-    assert images is not None, len(dataloader)
-
-    logging.info("starting warmup process")
-    warmup_range = trange(cfg.TRAIN.N_WARMUP, desc="Warmup: {}")
-    for w in warmup_range:
-        optimizer.zero_grad(set_to_none=True)
-
-        with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
-            out: Tensor = model(images)
-
-            probability_map: Tensor = out[:, [-1], ...]
-            vector: Tensor = out[:, 0:3:1, ...]
-            predicted_skeleton: Tensor = out[:, [-2], ...]
-
-            embedding: Tensor = vector_to_embedding(vector_scale, vector)
-            out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
-
-            _loss_embed = loss_embed(
-                out, masks.gt(0).float()
-            )  # out = [B, 2/3, X, Y, Z?]
-            _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-            _loss_skeleton = loss_skele(
-                predicted_skeleton, skele_masks.gt(0).float()
-            )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
-
-            loss = (
-                (cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT * _loss_embed)
-                + (cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT * _loss_prob)
-                + (cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT * _loss_skeleton)
-            )
-
-            warmup_range.desc = f"{loss.item()}"
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+    assert (
+        images is not None
+    ), f"Dataloader failed to find usable data at given train path. {len(dataloader)=}"
 
     # Train Step...
     epoch_range = (
         trange(epochs, desc=f"Loss = {1.0000000}") if rank == 0 else range(epochs)
     )
+
     logging.info("beginning training.")
     with bism.utils.train_context(
         cfg=cfg,
@@ -424,13 +382,8 @@ def train(
             for index, (images, masks, skeleton, skele_masks, baked) in enumerate(
                 dataloader
             ):
-                images = images.to(device, non_blocking=True)
-                masks = masks.to(device, non_blocking=True)
-                skele_masks = skele_masks.to(device, non_blocking=True)
-                baked = baked.to(device, non_blocking=True)
-
                 optimizer.zero_grad(set_to_none=True)
-                logging.info(f"Starting Batch: {index+1}/{len(dataloader)}")
+                logging.info(f"Batch: {index+1}/{len(dataloader)}")
 
                 with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
                     out: Tensor = model(images)
@@ -440,18 +393,21 @@ def train(
                     predicted_skeleton: Tensor = out[:, [-2], ...]
 
                     embedding: Tensor = vector_to_embedding(vector_scale, vector)
-                    out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
+                    _loss_background, _loss_embed, out = sparse_loss(
+                        vectors=vector * vector_scale.view(1, 3, 1, 1, 1),
+                        embed=embedding,
+                        skeletons=skeleton,
+                        background=masks,
+                        semantic_mask=probability_map,
+                        sigma=sigma(index),
+                        anisotropy=cfg.AUGMENTATION.BAKE_SKELETON_ANISOTROPY,
+                        distance_thr=cfg.EXPERIMENTAL.DIST_THR,
+                        cfg=cfg,
+                    )
 
-                    _loss_embed = loss_embed(
-                        out, masks.gt(0).float()
-                    )  # out = [B, 2/3, X, Y, :w
-                    # Z?]
-                    _loss_prob = loss_prob(probability_map, masks.gt(0).float())
                     _loss_skeleton = loss_skele(
                         predicted_skeleton, skele_masks.gt(0).float()
-                    )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
-
-                    logging.debug(f"\t{_loss_embed=}, {_loss_prob=}, {_loss_skeleton=}")
+                    )
 
                     # fuck this small amount of code.
                     loss = (
@@ -463,7 +419,7 @@ def train(
                         + (
                             cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
                             * (1 if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH else 0)
-                            * _loss_prob
+                            * _loss_background
                         )
                         + (
                             cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
@@ -472,6 +428,19 @@ def train(
                         )
                     )
 
+                    logging.info(
+                        f"Train batch: {index + 1}/{len(dataloader)} | Loss: {_loss_embed=}, {_loss_background=}, {_loss_skeleton=}, {loss=}"
+                    )
+
+                    if torch.any(torch.isnan(loss)):
+                        print(
+                            f"Found NaN value in loss.\n\tLoss Embed: {_loss_embed}\n\tLoss Probability: {_loss_background}"
+                        )
+                        print(f"\t{torch.any(torch.isnan(vector))}")
+                        print(f"\t{torch.any(torch.isnan(embedding))}")
+                        continue
+
+                logging.debug("performing backwards pass")
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -481,7 +450,7 @@ def train(
 
                 _loss.append(loss.item())
                 _embed.append(_loss_embed.item())
-                _prob.append(_loss_prob.item())
+                _prob.append(_loss_background.item())
                 _skele.append(_loss_skeleton.item())
 
             avg_epoch_loss.append(mean(_loss))
@@ -489,6 +458,8 @@ def train(
             avg_epoch_prob_loss.append(mean(_prob))
             avg_epoch_skele_loss.append(mean(_skele))
             scheduler.step()
+
+            logging.info(f"Epoch {e+1}/{epochs}: Train Loss: {avg_epoch_loss[-1]:0.5f}")
 
             if writer and (rank == 0):
                 logging.info("writing to tensorboard")
@@ -502,7 +473,7 @@ def train(
                     tag="Train",
                     epoch=e,
                     images=images.mul(dataset_std).add(dataset_mean),
-                    masks=masks,
+                    masks=torch.logical_not(masks).float(),
                     probability_map=probability_map,
                     vector=vector,
                     out=out,
@@ -515,19 +486,11 @@ def train(
             if e % cfg.TRAIN.VALIDATE_EPOCH_SKIP == 0 and valdiation_dataloader:
                 logging.info("starting validation step")
                 _loss, _embed, _prob, _skele = [], [], [], []
-                for (
-                    images,
-                    masks,
-                    skeleton,
-                    skele_masks,
-                    baked,
-                ) in valdiation_dataloader:
+                for index, (images, masks, skeleton, skele_masks, baked) in enumerate(
+                   valdiation_dataloader
+                ):
+                    # Validation for sparse training is just the normal skoots approach
                     with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
-                        images = images.to(device, non_blocking=True)
-                        masks = masks.to(device, non_blocking=True)
-                        skele_masks = skele_masks.to(device, non_blocking=True)
-                        baked = baked.to(device, non_blocking=True)
-
                         with torch.no_grad():
                             out: Tensor = model(images)
 
@@ -548,31 +511,18 @@ def train(
                                 predicted_skeleton, skele_masks.gt(0).float()
                             )
 
-                            loss = (
-                                (
-                                    cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
-                                    * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
-                                    * _loss_embed
-                                )
-                                + (
-                                    cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
-                                    * (
-                                        1
-                                        if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH
-                                        else 0
-                                    )
-                                    * _loss_prob
-                                )
-                                + (
-                                    cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
-                                    * (
-                                        1
-                                        if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH
-                                        else 0
-                                    )
-                                    * _loss_skeleton
-                                )
+                            loss = (2 * _loss_embed) + (2 * _loss_prob) + _loss_skeleton
+                            logging.info(
+                                f"Validation batch: {index + 1}/{len(dataloader)} | Loss: {_loss_embed=}, {_loss_background=}, {_loss_skeleton=}, {loss=}"
                             )
+
+                            if torch.isnan(loss):
+                                print(
+                                    f"Found NaN value in loss.\n\tLoss Embed: {_loss_embed}\n\tLoss Probability: {_loss_prob}"
+                                )
+                                print(f"\t{torch.any(torch.isnan(vector))}")
+                                print(f"\t{torch.any(torch.isnan(embedding))}")
+                                continue
 
                     scaler.scale(loss)
                     _loss.append(loss.item())
@@ -585,8 +535,11 @@ def train(
                 avg_val_prob_loss.append(mean(_prob))
                 avg_val_skele_loss.append(mean(_skele))
 
+                logging.info(
+                    f"Epoch {e+1}/{epochs}: Validation Loss: {avg_epoch_loss[-1]:0.5f}"
+                )
+
                 if writer and (rank == 0):
-                    logging.info("writing validation to tensorboard")
                     writer.add_scalar("Validation/train", avg_val_loss[-1], e)
                     writer.add_scalar("Validation/embed", avg_val_embed_loss[-1], e)
                     writer.add_scalar("Validation/prob", avg_val_prob_loss[-1], e)
@@ -609,4 +562,3 @@ def train(
                     f"lr={scheduler.get_last_lr()[-1]:.3e}, Loss (train | val): "
                     + f"{avg_epoch_loss[-1]:.5f} | {avg_val_loss[-1]:.5f}"
                 )
-    logging.critical("training finished successfully")

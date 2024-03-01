@@ -71,7 +71,8 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
     """
     # raise DeprecationWarning('This function is slow and should no longer be used...')
     unique = torch.unique(mask)
-
+    print(f'found {len(unique)-1} objects to skeletonize.')
+    print(f'object IDs: {unique.tolist()}')
     x, y, z = mask.shape
 
     if scale.sum() != 3:
@@ -82,8 +83,7 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
                 mask.unsqueeze(0).unsqueeze(0).float(),
                 size=torch.tensor([x, y, z]).mul(scale).float().round().int().tolist(),
                 mode="nearest",
-            )
-            .squeeze()
+            ).squeeze()
             # .cuda()
             .int()
         )
@@ -94,10 +94,10 @@ def calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
     unique_list = unique.tolist()
 
     for u in unique:
-        assert u in large_mask_unique, 'Downscaled too much!'
+        assert u in large_mask_unique, "Downscaled too much!"
 
     for u in large_mask_unique:
-        assert u in unique_list, 'Downscaled too much!'
+        assert u in unique_list, "Downscaled too much!"
 
     # assert torch.allclose(
     #     unique.cuda(), torch.unique(large_mask)
@@ -175,26 +175,34 @@ def _calculate_skeletons(mask: Tensor, scale: Tensor) -> Dict[int, Tensor]:
         dust_threshold=0,
         fill_holes=False,
         fix_avocados=False,
-        parallel=0
+        parallel=0,
     )
-    print('test1234')
-    skels = {k:torch.from_numpy(v.vertices).div(torch.tensor(scale)).round().long() for k, v in skels.items()}
-
+    skels = {
+        k: torch.from_numpy(v.vertices).div(torch.tensor(scale)).round().long()
+        for k, v in skels.items()
+    }
 
     return skels
 
 
 def create_gt_skeletons(base_dir, mask_filter, scale: Tuple[float, float, float]):
-    files = glob.glob(os.path.join(base_dir, f"*{mask_filter}.tif"))
-    files = [b[:-11:] for b in files]
+    if os.path.isdir(base_dir):
+        files = glob.glob(os.path.join(base_dir, f"*{mask_filter}.tif"))
+        # files = [b[:-11:] for b in files]
+        print(
+            f"found the following files in dir: {base_dir} with mask_filer: {mask_filter}:\n{files}"
+        )
+    else:
+        files = [base_dir]
+        print(f'skeletonizing: {base_dir}')
 
     scale = torch.tensor(scale)
-
     for f in files:
-        print('attempting to skeletonize ', f+f"{mask_filter}.tif" )
-        mask = io.imread(f + f"{mask_filter}.tif")
+        print("attempting to skeletonize ", f)
+        mask = io.imread(f)
         mask = torch.from_numpy(mask.astype(np.int32))
         mask = mask.permute((1, 2, 0))
+        print('loaded image: ', f)
 
         output = calculate_skeletons(mask, scale)
 
@@ -218,7 +226,9 @@ if __name__ == "__main__":
     To do this, we take the index of each point, find the skeleton point closest to it, andreplace it
     """
 
-    image = io.imread('/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/mitochondria/train/external/kasthuri.labels.tif')
+    image = io.imread(
+        "/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/data/mitochondria/train/external/kasthuri.labels.tif"
+    )
     image = torch.from_numpy(image.transpose((1, 2, 0)))
     skels = calculate_skeletons(image, (1, 1, 7))
 
@@ -227,9 +237,13 @@ if __name__ == "__main__":
 
     for id, skel in skels.items():
         print(skel.shape)
-        skeletons[skel[:,0].long(), skel[:,1].long(), skel[:,2].div(7).round().long()] = 1
+        skeletons[
+            skel[:, 0].long(), skel[:, 1].long(), skel[:, 2].div(7).round().long()
+        ] = 1
 
-    io.imsave('/home/chris/Desktop/skeletons_test.tif', skeletons.permute((2, 0 ,1).numpy()))
+    io.imsave(
+        "/home/chris/Desktop/skeletons_test.tif", skeletons.permute((2, 0, 1).numpy())
+    )
 
     # bases = [
     #     # '/home/chris/Dropbox (Partners HealthCare)/trainMitochondriaSegmentation/data/train/',

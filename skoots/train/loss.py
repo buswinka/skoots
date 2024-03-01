@@ -50,13 +50,19 @@ class jaccard(nn.Module):
 
         return 1.0 - (intersection / union)
 
+def _dice(pred: Tensor, ground_truth: Tensor, eps: float):
+    intersection = (pred * ground_truth).sum().add(eps)
+    denominator = (pred + ground_truth).sum().add(eps)
+    loss = 2 * intersection / denominator
+    return 1-loss
+
 
 class dice(nn.Module):
     def __init__(self):
         super(dice, self).__init__()
 
     def forward(
-        self, predicted: torch.Tensor, ground_truth: torch.Tensor, smooth: float = 1e-10
+        self, predicted: torch.Tensor, ground_truth: torch.Tensor, eps: float = 1e-10
     ) -> torch.Tensor:
         """
         Returns dice index of two torch.Tensors
@@ -72,14 +78,18 @@ class dice(nn.Module):
                 - Result of Loss Function Calculation
         """
 
-        # Crop both tensors to the same shape
+        # # Crop both tensors to the same shape
+        # predicted, ground_truth = crop_to_identical_size(predicted, ground_truth)
+        #
+        # intersection = (predicted * ground_truth).sum().add(smooth)
+        # denominator = (predicted + ground_truth).sum().add(smooth)
+        # loss = 2 * intersection / denominator
+        #
+        # return 1 - loss
+
         predicted, ground_truth = crop_to_identical_size(predicted, ground_truth)
 
-        intersection = (predicted * ground_truth).sum().add(smooth)
-        denominator = (predicted + ground_truth).sum().add(smooth)
-        loss = 2 * intersection / denominator
-
-        return 1 - loss
+        return _dice(predicted, ground_truth, eps)
 
 
 class tversky(nn.Module):

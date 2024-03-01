@@ -130,7 +130,7 @@ def binary_erosion(image: Tensor) -> Tensor:
 
     Shapes:
         - input: :math:`(B, C, X, Y, Z)`
-        - output: :math:`(C, C, X, Y, Z)`
+        - output: :math:`(B, C, X, Y, Z)`
 
 
     :param image: binary image
