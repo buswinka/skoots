@@ -356,35 +356,33 @@ def train(
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
-            out: Tensor = model(images)
+        out: Tensor = model(images)
 
-            probability_map: Tensor = out[:, [-1], ...]
-            vector: Tensor = out[:, 0:3:1, ...]
-            predicted_skeleton: Tensor = out[:, [-2], ...]
+        probability_map: Tensor = out[:, [-1], ...]
+        vector: Tensor = out[:, 0:3:1, ...]
+        predicted_skeleton: Tensor = out[:, [-2], ...]
 
-            embedding: Tensor = vector_to_embedding(vector_scale, vector)
-            out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
+        embedding: Tensor = vector_to_embedding(vector_scale, vector)
+        out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
-            _loss_embed = loss_embed(
-                out, masks.gt(0).float()
-            )  # out = [B, 2/3, X, Y, Z?]
-            _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-            _loss_skeleton = loss_skele(
-                predicted_skeleton, skele_masks.gt(0).float()
-            )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+        _loss_embed = loss_embed(
+            out, masks.gt(0).float()
+        )  # out = [B, 2/3, X, Y, Z?]
+        _loss_prob = loss_prob(probability_map, masks.gt(0).float())
+        _loss_skeleton = loss_skele(
+            predicted_skeleton, skele_masks.gt(0).float()
+        )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
-            loss = (
-                (cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT * _loss_embed)
-                + (cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT * _loss_prob)
-                + (cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT * _loss_skeleton)
-            )
+        loss = (
+            (cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT * _loss_embed)
+            + (cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT * _loss_prob)
+            + (cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT * _loss_skeleton)
+        )
 
-            warmup_range.desc = f"{loss.item()}"
+        warmup_range.desc = f"{loss.item()}"
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer_step()
 
     # Train Step...
     epoch_range = (
@@ -432,49 +430,47 @@ def train(
                 optimizer.zero_grad(set_to_none=True)
                 logging.info(f"Starting Batch: {index+1}/{len(dataloader)}")
 
-                with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
-                    out: Tensor = model(images)
+                out: Tensor = model(images)
 
-                    probability_map: Tensor = out[:, [-1], ...]
-                    vector: Tensor = out[:, 0:3:1, ...]
-                    predicted_skeleton: Tensor = out[:, [-2], ...]
+                probability_map: Tensor = out[:, [-1], ...]
+                vector: Tensor = out[:, 0:3:1, ...]
+                predicted_skeleton: Tensor = out[:, [-2], ...]
 
-                    embedding: Tensor = vector_to_embedding(vector_scale, vector)
-                    out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
+                embedding: Tensor = vector_to_embedding(vector_scale, vector)
+                out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
-                    _loss_embed = loss_embed(
-                        out, masks.gt(0).float()
-                    )  # out = [B, 2/3, X, Y, :w
-                    # Z?]
-                    _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-                    _loss_skeleton = loss_skele(
-                        predicted_skeleton, skele_masks.gt(0).float()
-                    )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
+                _loss_embed = loss_embed(
+                    out, masks.gt(0).float()
+                )  # out = [B, 2/3, X, Y, :w
+                # Z?]
+                _loss_prob = loss_prob(probability_map, masks.gt(0).float())
+                _loss_skeleton = loss_skele(
+                    predicted_skeleton, skele_masks.gt(0).float()
+                )  # + skel_crossover_loss(predicted_skeleton, skele_masks.gt(0).float())
 
-                    logging.debug(f"\t{_loss_embed=}, {_loss_prob=}, {_loss_skeleton=}")
+                logging.debug(f"\t{_loss_embed=}, {_loss_prob=}, {_loss_skeleton=}")
 
-                    # fuck this small amount of code.
-                    loss = (
-                        (
-                            cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
-                            * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
-                            * _loss_embed
-                        )
-                        + (
-                            cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
-                            * (1 if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH else 0)
-                            * _loss_prob
-                        )
-                        + (
-                            cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
-                            * (1 if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH else 0)
-                            * _loss_skeleton
-                        )
+                # fuck this small amount of code.
+                loss = (
+                    (
+                        cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
+                        * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
+                        * _loss_embed
                     )
+                    + (
+                        cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
+                        * (1 if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH else 0)
+                        * _loss_prob
+                    )
+                    + (
+                        cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
+                        * (1 if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH else 0)
+                        * _loss_skeleton
+                    )
+                )
 
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                loss.backward()
+                optimizer_step()
 
                 if e > swa_start:
                     swa_model.update_parameters(model)
@@ -522,57 +518,56 @@ def train(
                     skele_masks,
                     baked,
                 ) in valdiation_dataloader:
-                    with autocast(enabled=cfg.TRAIN.MIXED_PRECISION):  # Saves Memory!
-                        images = images.to(device, non_blocking=True)
-                        masks = masks.to(device, non_blocking=True)
-                        skele_masks = skele_masks.to(device, non_blocking=True)
-                        baked = baked.to(device, non_blocking=True)
+                    images = images.to(device, non_blocking=True)
+                    masks = masks.to(device, non_blocking=True)
+                    skele_masks = skele_masks.to(device, non_blocking=True)
+                    baked = baked.to(device, non_blocking=True)
 
-                        with torch.no_grad():
-                            out: Tensor = model(images)
+                    with torch.no_grad():
+                        out: Tensor = model(images)
 
-                            probability_map: Tensor = out[:, [-1], ...]
-                            predicted_skeleton: Tensor = out[:, [-2], ...]
-                            vector: Tensor = out[:, 0:3:1, ...]
+                        probability_map: Tensor = out[:, [-1], ...]
+                        predicted_skeleton: Tensor = out[:, [-2], ...]
+                        vector: Tensor = out[:, 0:3:1, ...]
 
-                            embedding: Tensor = vector_to_embedding(
-                                vector_scale, vector
+                        embedding: Tensor = vector_to_embedding(
+                            vector_scale, vector
+                        )
+                        out: Tensor = baked_embed_to_prob(
+                            embedding, baked, sigma(e)
+                        )
+
+                        _loss_embed = loss_embed(out, masks.gt(0).float())
+                        _loss_prob = loss_prob(probability_map, masks.gt(0).float())
+                        _loss_skeleton = loss_prob(
+                            predicted_skeleton, skele_masks.gt(0).float()
+                        )
+
+                        loss = (
+                            (
+                                cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
+                                * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
+                                * _loss_embed
                             )
-                            out: Tensor = baked_embed_to_prob(
-                                embedding, baked, sigma(e)
-                            )
-
-                            _loss_embed = loss_embed(out, masks.gt(0).float())
-                            _loss_prob = loss_prob(probability_map, masks.gt(0).float())
-                            _loss_skeleton = loss_prob(
-                                predicted_skeleton, skele_masks.gt(0).float()
-                            )
-
-                            loss = (
-                                (
-                                    cfg.TRAIN.LOSS_EMBED_RELATIVE_WEIGHT
-                                    * (1 if e > cfg.TRAIN.LOSS_EMBED_START_EPOCH else 0)
-                                    * _loss_embed
+                            + (
+                                cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
+                                * (
+                                    1
+                                    if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH
+                                    else 0
                                 )
-                                + (
-                                    cfg.TRAIN.LOSS_PROBABILITY_RELATIVE_WEIGHT
-                                    * (
-                                        1
-                                        if e > cfg.TRAIN.LOSS_PROBABILITY_START_EPOCH
-                                        else 0
-                                    )
-                                    * _loss_prob
-                                )
-                                + (
-                                    cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
-                                    * (
-                                        1
-                                        if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH
-                                        else 0
-                                    )
-                                    * _loss_skeleton
-                                )
+                                * _loss_prob
                             )
+                            + (
+                                cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
+                                * (
+                                    1
+                                    if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH
+                                    else 0
+                                )
+                                * _loss_skeleton
+                            )
+                        )
 
                     scaler.scale(loss)
                     _loss.append(loss.item())
