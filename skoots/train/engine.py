@@ -62,8 +62,11 @@ def train(
     cfg: CfgNode,
     logging_level: int,
 ):
+    os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
     setup_process(rank, world_size, port, backend="nccl")
     device = f"cuda:{rank}"
+    DTYPE = torch.bfloat16
+    torch.cuda.set_device(device)
 
     _log_map = [
         logging.DEBUG,
@@ -72,6 +75,12 @@ def train(
         logging.ERROR,
         logging.CRITICAL,
     ]
+
+    # torch._dynamo.config.verbose = True
+    # torch._inductor.config.debug = True
+    # torch._inductor.config.trace.enabled = True
+    # torch._logging.set_logs(dynamo=logging.DEBUG)
+    # torch._dynamo.config.optimize_ddp = False
 
     file_handler = logging.FileHandler(
         filename=f'/home/chris/Dropbox (Partners HealthCare)/skoots-experiments/logs/skoots_{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}_rank{rank}.log'
@@ -95,17 +104,18 @@ def train(
         force=True,
     )
 
-    base_model = base_model.to(device)
-    base_model = torch.nn.parallel.DistributedDataParallel(base_model)
+    base_model = (
+        base_model.to(device).to(DTYPE).to(memory_format=torch.channels_last_3d)
+    )
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        base_model = torch.nn.parallel.DistributedDataParallel(
+            base_model, find_unused_parameters=False, static_graph=True
+        )
 
     if int(rank) == 0:
         print(cfg)
-
-    if int(torch.__version__[0]) >= 2 and cfg.MODEL.COMPILE:
-        logging.info("Compiling model with torch inductor")
-        model = torch.compile(base_model)
-    else:
-        model = base_model
 
     augmentations = (
         TransformFromCfg(
@@ -269,12 +279,11 @@ def train(
     }
     logging.info("creating optimizer")
     optimizer: torch.optim.Optimizer = _valid_optimizers[cfg.TRAIN.OPTIMIZER](
-        model.parameters(),
+        base_model.parameters(),
         lr=cfg.TRAIN.LEARNING_RATE,
         weight_decay=cfg.TRAIN.WEIGHT_DECAY,
         **kwargs,
     )
-
 
     if cfg.TRAIN.LOAD_PRETRAINED_OPTIMIZER and cfg.TRAIN.PRETRAINED_MODEL_PATH:
         pretrained: Dict[str, any] = torch.load(
@@ -285,13 +294,15 @@ def train(
             optim_state_dict = pretrained["optimizer_state_dict"]
             optimizer.load_state_dict(optim_state_dict)
 
-    @torch.compile(fullgraph=False)
+    logging.info("Compiling optimizer with torch inductor")
+
+    # @torch.compile(fullgraph=False)
     def optimizer_step():
         optimizer.step()
 
-    for _ in range(5):
+    for i in range(5):
+        logging.debug(f"performing optimizer compilation warmup step: {i}")
         optimizer_step()
-
 
     logging.info("creating scheduler")
     scheduler = _valid_lr_schedulers[cfg.TRAIN.SCHEDULER](
@@ -300,10 +311,6 @@ def train(
 
     logging.info("creating grad scaler")
     scaler = GradScaler(enabled=cfg.TRAIN.MIXED_PRECISION)
-
-    swa_model = torch.optim.swa_utils.AveragedModel(model)
-    swa_start = 100
-    swa_scheduler = torch.optim.swa_utils.SWALR(optimizer, swa_lr=0.05)
 
     logging.info("creating loss functions")
     _kwarg = {
@@ -343,10 +350,18 @@ def train(
     # Warmup... Get the first from train_data
     logging.info("generating warmup data")
     for images, masks, skeleton, skele_masks, baked in dataloader:
-        images = images.to(device, non_blocking=True)
-        masks = masks.to(device, non_blocking=True)
-        skele_masks = skele_masks.to(device, non_blocking=True)
-        baked = baked.to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True).to(
+            DTYPE, memory_format=torch.channels_last_3d
+        )
+        masks = masks.to(device, non_blocking=True).to(
+            DTYPE, memory_format=torch.channels_last_3d
+        )
+        skele_masks = skele_masks.to(device, non_blocking=True).to(
+            DTYPE, memory_format=torch.channels_last_3d
+        )
+        baked = baked.to(device, non_blocking=True).to(
+            DTYPE, memory_format=torch.channels_last_3d
+        )
         break
 
     assert images is not None, len(dataloader)
@@ -356,7 +371,7 @@ def train(
     for w in warmup_range:
         optimizer.zero_grad(set_to_none=True)
 
-        out: Tensor = model(images)
+        out: Tensor = base_model(images)
 
         probability_map: Tensor = out[:, [-1], ...]
         vector: Tensor = out[:, 0:3:1, ...]
@@ -365,9 +380,7 @@ def train(
         embedding: Tensor = vector_to_embedding(vector_scale, vector)
         out: Tensor = baked_embed_to_prob(embedding, baked, sigma(0))
 
-        _loss_embed = loss_embed(
-            out, masks.gt(0).float()
-        )  # out = [B, 2/3, X, Y, Z?]
+        _loss_embed = loss_embed(out, masks.gt(0).float())  # out = [B, 2/3, X, Y, Z?]
         _loss_prob = loss_prob(probability_map, masks.gt(0).float())
         _loss_skeleton = loss_skele(
             predicted_skeleton, skele_masks.gt(0).float()
@@ -383,6 +396,11 @@ def train(
 
         loss.backward()
         optimizer_step()
+
+    logging.info("Compiling model with torch inductor")
+    model = torch.compile(
+        base_model, mode="max-autotune-no-cudagraphs", disable=not cfg.MODEL.COMPILE
+    )
 
     # Train Step...
     epoch_range = (
@@ -422,10 +440,18 @@ def train(
             for index, (images, masks, skeleton, skele_masks, baked) in enumerate(
                 dataloader
             ):
-                images = images.to(device, non_blocking=True)
-                masks = masks.to(device, non_blocking=True)
-                skele_masks = skele_masks.to(device, non_blocking=True)
-                baked = baked.to(device, non_blocking=True)
+                images = images.to(device, non_blocking=True).to(
+                    DTYPE, memory_format=torch.channels_last_3d
+                )
+                masks = masks.to(device, non_blocking=True).to(
+                    DTYPE, memory_format=torch.channels_last_3d
+                )
+                skele_masks = skele_masks.to(device, non_blocking=True).to(
+                    DTYPE, memory_format=torch.channels_last_3d
+                )
+                baked = baked.to(device, non_blocking=True).to(
+                    DTYPE, memory_format=torch.channels_last_3d
+                )
 
                 optimizer.zero_grad(set_to_none=True)
                 logging.info(f"Starting Batch: {index+1}/{len(dataloader)}")
@@ -472,9 +498,6 @@ def train(
                 loss.backward()
                 optimizer_step()
 
-                if e > swa_start:
-                    swa_model.update_parameters(model)
-
                 _loss.append(loss.item())
                 _embed.append(_loss_embed.item())
                 _prob.append(_loss_prob.item())
@@ -484,6 +507,8 @@ def train(
             avg_epoch_embed_loss.append(mean(_embed))
             avg_epoch_prob_loss.append(mean(_prob))
             avg_epoch_skele_loss.append(mean(_skele))
+
+            torch.cuda.synchronize()
             scheduler.step()
 
             if writer and (rank == 0):
@@ -518,10 +543,18 @@ def train(
                     skele_masks,
                     baked,
                 ) in valdiation_dataloader:
-                    images = images.to(device, non_blocking=True)
-                    masks = masks.to(device, non_blocking=True)
-                    skele_masks = skele_masks.to(device, non_blocking=True)
-                    baked = baked.to(device, non_blocking=True)
+                    images = images.to(device, non_blocking=True).to(
+                        DTYPE, memory_format=torch.channels_last_3d
+                    )
+                    masks = masks.to(device, non_blocking=True).to(
+                        DTYPE, memory_format=torch.channels_last_3d
+                    )
+                    skele_masks = skele_masks.to(device, non_blocking=True).to(
+                        DTYPE, memory_format=torch.channels_last_3d
+                    )
+                    baked = baked.to(device, non_blocking=True).to(
+                        DTYPE, memory_format=torch.channels_last_3d
+                    )
 
                     with torch.no_grad():
                         out: Tensor = model(images)
@@ -530,12 +563,8 @@ def train(
                         predicted_skeleton: Tensor = out[:, [-2], ...]
                         vector: Tensor = out[:, 0:3:1, ...]
 
-                        embedding: Tensor = vector_to_embedding(
-                            vector_scale, vector
-                        )
-                        out: Tensor = baked_embed_to_prob(
-                            embedding, baked, sigma(e)
-                        )
+                        embedding: Tensor = vector_to_embedding(vector_scale, vector)
+                        out: Tensor = baked_embed_to_prob(embedding, baked, sigma(e))
 
                         _loss_embed = loss_embed(out, masks.gt(0).float())
                         _loss_prob = loss_prob(probability_map, masks.gt(0).float())
@@ -560,11 +589,7 @@ def train(
                             )
                             + (
                                 cfg.TRAIN.LOSS_SKELETON_RELATIVE_WEIGHT
-                                * (
-                                    1
-                                    if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH
-                                    else 0
-                                )
+                                * (1 if e > cfg.TRAIN.LOSS_SKELETON_START_EPOCH else 0)
                                 * _loss_skeleton
                             )
                         )

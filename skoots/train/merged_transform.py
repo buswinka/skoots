@@ -17,11 +17,66 @@ from yacs.config import CfgNode
 import logging
 import random
 
+
+@torch.no_grad()
+# @torch.compile()
+def _compiled_grid_sample(a, grid, align_corners=True, mode="nearest"):
+    return F.grid_sample(
+        a.float(), grid.float(), align_corners=align_corners, mode=mode
+    )
+
+
+@torch.no_grad()
+# @torch.compile()
+def _compiled_affine(image, angle, shear, scale, translate):
+    image = ttf.affine(
+        image,
+        angle=angle,
+        shear=float(shear),
+        scale=scale,
+        translate=translate,
+    )
+    return image
+
+
+@torch.jit.script
+def _elastic_on_skeletons(
+    skeleton: Dict[int, Tensor], grid: Tensor, shape: Tuple[int, int, int]
+):
+    x, y, z = shape
+    keys = skeleton.keys()
+    values = skeleton.values()
+    for i in range(len(keys)):
+        skel = values[i]
+        k = keys[i]
+
+        sx: Tensor = skel[:, 0]
+        sy: Tensor = skel[:, 1]
+        sz: Tensor = skel[:, 2]
+
+        ix0 = sx >= 0
+        ix1 = sx < x
+        iy0 = sy >= 0
+        iy1 = sy < y
+        iz0 = sz >= 0
+        iz1 = sz < z
+
+        # 6 way logical and
+        ind = (ix0 + ix1 + iy0 + iy1 + iz0 + iz1) == 6
+
+        # grid last dim is Z, Y, X for some reason
+        skel[ind, :] = grid[0, sx[ind], sy[ind], sz[ind], :][:, [2, 1, 0]]
+
+        skeleton[k] = skel
+
+    return skeleton
+
+
 def elastic_deform(
-        *args,
-        skeleton: Dict[int, Tensor],
-        displacement_shape: Tuple[int, int, int] = (6, 6, 2),
-        displacement_magnitude: Tuple[float,float,float] = (0.05, 0.05, 0.01),
+    *args,
+    skeleton: Dict[int, Tensor],
+    displacement_shape: Tuple[int, int, int] = (6, 6, 2),
+    displacement_magnitude: Tuple[float, float, float] = (0.05, 0.05, 0.01),
 ) -> Tuple[Tensor, Any, Dict[int, Tensor]]:
     """
     Randomly creates a deformation grid and applies to image, mask, and skeletons
@@ -33,22 +88,28 @@ def elastic_deform(
     :param max_displacement: float between 0 and 1
     :return:
     """
-    assert len(args) > 0, f'must pass at least one positional argument'
+    assert len(args) > 0, f"must pass at least one positional argument"
 
     shape = args[0].shape
 
     for i, a in enumerate(args):
-        assert isinstance(a, Tensor), f'positional argument {i} must be of type torch.Tensor not {type(a)}'
-        assert a.shape == shape, f'positional argument {i} must be of {shape=} not {a.shape}'
+        assert isinstance(
+            a, Tensor
+        ), f"positional argument {i} must be of type torch.Tensor not {type(a)}"
+        assert (
+            a.shape == shape
+        ), f"positional argument {i} must be of {shape=} not {a.shape}"
 
     # assert image.shape == mask.shape, "image and mask shape must be the same"
-    assert args[0].ndim == 5, f"image must be in shape: [B, C, X, Y, Z], not {args[0].shape}"
+    assert (
+        args[0].ndim == 5
+    ), f"image must be in shape: [B, C, X, Y, Z], not {args[0].shape}"
     assert args[0].device == args[0].device
     assert (
-            len(displacement_shape) == 3
+        len(displacement_shape) == 3
     ), "displacement_shape must be a tuple of integers with len == 3"
     assert (
-            len(displacement_magnitude) == 3
+        len(displacement_magnitude) == 3
     ), "displacement_magnitude must be a tuple of integers with len == 3"
     assert max(displacement_magnitude) < 1.0, "max displacement must not exceed 1.0"
 
@@ -59,24 +120,29 @@ def elastic_deform(
 
     b, c, x, y, z = args[0].shape
 
-    displacement_shape = (1, 3, displacement_shape[2], displacement_shape[1], displacement_shape[0])
+    displacement_shape = (
+        1,
+        3,
+        displacement_shape[2],
+        displacement_shape[1],
+        displacement_shape[0],
+    )
     displacement_magnitude = tuple(reversed(displacement_magnitude))
 
     # offset are the random directon vectors
     offset: Tensor = (
         F.interpolate(
             torch.rand(displacement_shape, device=device), (x, y, z), mode="trilinear"
-        ).permute((0, 2, 3, 4, 1)).mul(
-            torch.tensor(displacement_magnitude, device=device).view(1, 1, 1, 1, 3)
         )
-
+        .permute((0, 2, 3, 4, 1))
+        .mul(torch.tensor(displacement_magnitude, device=device).view(1, 1, 1, 1, 3))
     )
 
     # Identity grid
     d3 = torch.linspace(-1, 1, z, device=device)
     d2 = torch.linspace(-1, 1, y, device=device)
     d1 = torch.linspace(-1, 1, x, device=device)
-    meshx, meshy, meshz = torch.meshgrid((d1, d2, d3), indexing='ij')
+    meshx, meshy, meshz = torch.meshgrid((d1, d2, d3), indexing="ij")
     base_grid = torch.stack((meshz, meshy, meshx), 3)
     base_grid = base_grid.unsqueeze(0)  # add batch dim
 
@@ -86,30 +152,38 @@ def elastic_deform(
     # apply the deformation
     out: List[Tensor, ...] = []
     for i, a in enumerate(args):
-        out.append(F.grid_sample(a.float(), grid.float(), align_corners=True, mode='nearest'))
+        out.append(
+            _compiled_grid_sample(
+                a.float(), grid.float(), align_corners=True, mode="nearest"
+            )
+        )
 
     # grid_sample uses the grid in reverse (out x,y,z looks at grid x,y,z to know.
     # This means we now have to subtract offest)
     grid = (base_grid - offset).float()
-    grid = grid.add(1).div(2).mul(
-        torch.tensor((z, y, x), device=device).view(1, 1, 1, 1, 3)
+    grid = (
+        grid.add(1)
+        .div(2)
+        .mul(torch.tensor((z, y, x), device=device).view(1, 1, 1, 1, 3))
     )
-    for k, skel in skeleton.items():
-        sx: Tensor = skel[:, 0].long()
-        sy: Tensor = skel[:, 1].long()
-        sz: Tensor = skel[:, 2].long()
-
-        ind_x = torch.logical_and(sx >= 0, sx < x)
-        ind_y = torch.logical_and(sy >= 0, sy < y)
-        ind_z = torch.logical_and(sz >= 0, sz < z)
-
-        # Equivalent to a 3 way logical and
-        ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3
-
-        # grid last dim is Z, Y, X for some reason
-        skel[ind, :] = grid[0, sx[ind], sy[ind], sz[ind], :][:, [2, 1, 0]]
-
-        skeleton[k] = skel
+    # INSANELY SLOW
+    # for k, skel in skeleton.items():
+    #     sx: Tensor = skel[:, 0].long()
+    #     sy: Tensor = skel[:, 1].long()
+    #     sz: Tensor = skel[:, 2].long()
+    #
+    #     ind_x = torch.logical_and(sx >= 0, sx < x)
+    #     ind_y = torch.logical_and(sy >= 0, sy < y)
+    #     ind_z = torch.logical_and(sz >= 0, sz < z)
+    #
+    #     # Equivalent to a 3 way logical and
+    #     ind = (ind_x.float() + ind_y.float() + ind_z.float()) == 3
+    #
+    #     # grid last dim is Z, Y, X for some reason
+    #     skel[ind, :] = grid[0, sx[ind], sy[ind], sz[ind], :][:, [2, 1, 0]]
+    #
+    #     skeleton[k] = skel
+    skeleton = _elastic_on_skeletons(skeleton, grid, shape=(x, y, z))
 
     return (*out, skeleton)
 
@@ -141,12 +215,12 @@ def _get_box(mask: Tensor, device: str, threshold: int) -> Tuple[Tensor, Tensor]
 
 # @torch.jit.script
 def _get_affine_matrix(
-        center: List[float],
-        angle: float,
-        translate: List[float],
-        scale: float,
-        shear: List[float],
-        device: str,
+    center: List[float],
+    angle: float,
+    translate: List[float],
+    scale: float,
+    shear: List[float],
+    device: str,
 ) -> Tensor:
     # We need compute the affine transformation matrix: M = T * C * RSS * C^-1
 
@@ -212,12 +286,12 @@ def _get_affine_matrix(
 
 
 def _get_inverse_affine_matrix(
-        center: List[float],
-        angle: float,
-        translate: List[float],
-        scale: float,
-        shear: List[float],
-        inverted: bool = True,
+    center: List[float],
+    angle: float,
+    translate: List[float],
+    scale: float,
+    shear: List[float],
+    inverted: bool = True,
 ) -> List[float]:
     # Helper method to compute inverse matrix for affine transformation
 
@@ -284,10 +358,10 @@ def calc_centroid(mask: Tensor, id: int) -> Tensor:
     upper = torch.nonzero(temp).max(0)[0]
 
     temp = temp[
-           lower[0].item(): upper[0].item(),  # x
-           lower[1].item(): upper[1].item(),  # y
-           lower[2].item(): upper[2].item(),  # z
-           ]
+        lower[0].item() : upper[0].item(),  # x
+        lower[1].item() : upper[1].item(),  # y
+        lower[2].item() : upper[2].item(),  # z
+    ]
 
     if temp.numel() == 0:
         return torch.tensor((-1, -1, -1), device=mask.device)
@@ -402,24 +476,9 @@ class TransformFromCfg(nn.Module):
         self._center: Tensor = skeletons[key].float().mean(0).squeeze()
 
         # Center that instance
-        x0 = (
-            self._center[0]
-            .sub(w // 2)
-            .long()
-            .clamp(min=0, max=image.shape[1] - w)
-        )
-        y0 = (
-            self._center[1]
-            .sub(h // 2)
-            .long()
-            .clamp(min=0, max=image.shape[2] - h)
-        )
-        z0 = (
-            self._center[2]
-            .sub(d // 2)
-            .long()
-            .clamp(min=0, max=image.shape[3] - d)
-        )
+        x0 = self._center[0].sub(w // 2).long().clamp(min=0, max=image.shape[1] - w)
+        y0 = self._center[1].sub(h // 2).long().clamp(min=0, max=image.shape[2] - h)
+        z0 = self._center[2].sub(d // 2).long().clamp(min=0, max=image.shape[3] - d)
 
         self._xyz = (x0, y0, z0)
 
@@ -427,15 +486,18 @@ class TransformFromCfg(nn.Module):
         y1 = y0 + h
         z1 = z0 + d
 
-        image = image[:, x0: x1, y0: y1, z0: z1].clone()
-        masks = masks[:, x0: x1, y0: y1, z0: z1].clone()
+        image = image[:, x0:x1, y0:y1, z0:z1].clone()
+        masks = masks[:, x0:x1, y0:y1, z0:z1].clone()
 
         # Correct the skeleton positions
         new_skel = {}
         keys = list(skeletons.keys())
         for k in keys:
-            new = skeletons[k].sub(torch.tensor([x0, y0, z0], device=image.device)).float()
-
+            new = (
+                skeletons[k]
+                .sub(torch.tensor([x0, y0, z0], device=image.device))
+                .float()
+            )
 
             if new.device != self.DEVICE:
                 new = new.to(self.DEVICE)
@@ -473,7 +535,7 @@ class TransformFromCfg(nn.Module):
             rotated_skeleton = mat @ skeleton_xy  # [1,3,N]
             skeletons[k][:, [0, 1]] = rotated_skeleton[0, [0, 1], :].T.float()
 
-        image = ttf.affine(
+        image = _compiled_affine(
             image.permute(0, 3, 1, 2).float(),
             angle=angle,
             shear=float(shear),
@@ -481,7 +543,7 @@ class TransformFromCfg(nn.Module):
             translate=[0, 0],
         ).permute(0, 2, 3, 1)
 
-        masks = ttf.affine(
+        masks = _compiled_affine(
             masks.permute(0, 3, 1, 2).float(),
             angle=angle,
             shear=float(shear),
@@ -502,24 +564,9 @@ class TransformFromCfg(nn.Module):
         self._center = self._center - torch.tensor([x0, y0, z0], device=self.DEVICE)
 
         # Center that instance
-        x0 = (
-            self._center[0]
-            .sub(w // 2)
-            .long()
-            .clamp(min=0, max=image.shape[1] - w)
-        )
-        y0 = (
-            self._center[1]
-            .sub(h // 2)
-            .long()
-            .clamp(min=0, max=image.shape[2] - h)
-        )
-        z0 = (
-            self._center[2]
-            .sub(d // 2)
-            .long()
-            .clamp(min=0, max=image.shape[3] - d)
-        )
+        x0 = self._center[0].sub(w // 2).long().clamp(min=0, max=image.shape[1] - w)
+        y0 = self._center[1].sub(h // 2).long().clamp(min=0, max=image.shape[2] - h)
+        z0 = self._center[2].sub(d // 2).long().clamp(min=0, max=image.shape[3] - d)
 
         x1 = x0 + w
         y1 = y0 + h
@@ -576,7 +623,9 @@ class TransformFromCfg(nn.Module):
         contrast_val = random.uniform(*self.CONTRAST_RANGE)
         # [ C, X, Y, Z ] -> [Z, C, X, Y]
         image = image.div(255)
-        image = ttf.adjust_contrast(image.permute(3, 0, 1, 2), contrast_val).permute(1, 2, 3, 0)
+        image = ttf.adjust_contrast(image.permute(3, 0, 1, 2), contrast_val).permute(
+            1, 2, 3, 0
+        )
         image = image.mul(255)
 
         return image, masks
@@ -606,13 +655,13 @@ class TransformFromCfg(nn.Module):
 
     @torch.no_grad()
     def forward(self, data_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
-
         assert "masks" in data_dict, 'keyword "masks" not in data_dict'
         assert "image" in data_dict, 'keyword "image" not in data_dict'
         assert "skeletons" in data_dict, 'keyword "skeletons" not in data_dict'
 
-        logging.debug(f"TransformFromCfg.forward() | starting transforms on device: {self.DEVICE}")
-
+        logging.debug(
+            f"TransformFromCfg.forward() | starting transforms on device: {self.DEVICE}"
+        )
 
         logging.debug("TransformFromCfg.forward() | applying prefix function")
         data_dict = self.prefix_function(data_dict)
@@ -628,7 +677,6 @@ class TransformFromCfg(nn.Module):
 
         # scale: int = 2 ** 16 if image.max() > 256 else 255  # Our images might be 16 bit, or 8 bit
         # scale = scale if image.max() > 1 else 1.0
-
 
         if random.random() < self.ELASTIC_RATE:
             image, masks, skeletons = self._elastic(image, masks, skeletons)
@@ -677,7 +725,9 @@ class TransformFromCfg(nn.Module):
             logging.debug("TransformFromCfg.forward() | adding noise")
             image, masks = self._noise(image, masks)
 
-        logging.debug(f"TransformFromCfg.forward() | normalizing with {self.dataset_mean=}, {self.dataset_std=}")
+        logging.debug(
+            f"TransformFromCfg.forward() | normalizing with {self.dataset_mean=}, {self.dataset_std=}"
+        )
         image, masks = self._normalize(image, masks)
 
         if spatial_dims == 2:
@@ -725,6 +775,7 @@ class TransformFromCfg(nn.Module):
 
     def __repr__(self):
         return f"TransformFromCfg[Device:{self.DEVICE}]\ncfg.AUGMENTATION:\n=================\n{self.cfg.AUGMENTATION}]"
+
 
 #
 # @torch.no_grad()
@@ -1020,6 +1071,7 @@ class TransformFromCfg(nn.Module):
 #
 #     return data_dict
 
+
 class BackgroundTransformFromCfg(TransformFromCfg):
     def __init__(self, cfg: CfgNode, device: torch.device | str):
         super(BackgroundTransformFromCfg, self).__init__(cfg, device)
@@ -1056,14 +1108,15 @@ class BackgroundTransformFromCfg(TransformFromCfg):
         return image, masks, skeletons
 
     def forward(self, data_dict):
-        data_dict['masks'] = torch.ones_like(data_dict['image'])
-        data_dict['skeletons'] = {-1: None}
+        data_dict["masks"] = torch.ones_like(data_dict["image"])
+        data_dict["skeletons"] = {-1: None}
 
         data_dict = super().forward(data_dict)
         return
 
     def __repr__(self):
         return f"BackgroundTransformFromCfg[Device:{self.DEVICE}]\ncfg.AUGMENTATION:\n=================\n{self.cfg.AUGMENTATION}]"
+
 
 #
 # def background_transform_from_cfg(
@@ -1746,7 +1799,9 @@ if __name__ == "__main__":
     img = img[:, 650:1100, 390:890].permute(1, 2, 0)
     mask = mask[:, 650:1100, 390:890].permute(1, 2, 0)
 
-    skeletons = skoots.train.generate_skeletons.calculate_skeletons(mask, torch.tensor((0.3, 0.3, 1.0)))
+    skeletons = skoots.train.generate_skeletons.calculate_skeletons(
+        mask, torch.tensor((0.3, 0.3, 1.0))
+    )
 
     x, y, z = img.shape
     img = img.view(1, 1, x, y, z)
@@ -1760,10 +1815,10 @@ if __name__ == "__main__":
 
     skl_msk = skeleton_to_mask(skeletons, (x, y, z))
     Z = 14
-    plt.imshow(og[0, 0, :, :, Z], cmap='turbo')
-    plt.imshow(og_skl[0, :, :, Z], alpha=0.3, cmap='gray')
+    plt.imshow(og[0, 0, :, :, Z], cmap="turbo")
+    plt.imshow(og_skl[0, :, :, Z], alpha=0.3, cmap="gray")
     plt.show()
 
-    plt.imshow(img[0, 0, :, :, Z], cmap='turbo')
-    plt.imshow(skl_msk[0, :, :, Z], alpha=0.3, cmap='gray')
+    plt.imshow(img[0, 0, :, :, Z], cmap="turbo")
+    plt.imshow(skl_msk[0, :, :, Z], alpha=0.3, cmap="gray")
     plt.show()

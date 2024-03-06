@@ -37,8 +37,12 @@ def load_cfg_from_file(file: str):
 def main():
     parser = argparse.ArgumentParser(description="SKOOTS Training Parameters")
     parser.add_argument("--config-file", type=str, help="YAML config file for training")
-    parser.add_argument('-b', '--batch', action='store_true',
-                        help='Batch execute a folder of training config files')
+    parser.add_argument(
+        "-b",
+        "--batch",
+        action="store_true",
+        help="Batch execute a folder of training config files",
+    )
     parser.add_argument(
         "--log",
         type=int,
@@ -63,18 +67,24 @@ def main():
         force=True,
     )
 
-    configs: List[str] = glob.glob(os.path.join(args.config_file, '*.yaml')) if args.batch else [args.config_file]
+    configs: List[str] = (
+        glob.glob(os.path.join(args.config_file, "*.yaml"))
+        if args.batch
+        else [args.config_file]
+    )
 
     if args.batch:
-        logging.info(f'found {len(configs)} config files at: {args.config_file}')
+        logging.info(f"found {len(configs)} config files at: {args.config_file}")
     else:
-        logging.info(f'performing training run with config: {args.config_file}')
+        logging.info(f"performing training run with config: {args.config_file}")
 
     for f in configs:
         cfg = load_cfg_from_file(f)
         model: nn.Module = cfg_to_bism_model(cfg)  # This is our skoots torch model
 
-        if cfg.TRAIN.PRETRAINED_MODEL_PATH and os.path.exists(cfg.TRAIN.PRETRAINED_MODEL_PATH[0]):
+        if cfg.TRAIN.PRETRAINED_MODEL_PATH and os.path.exists(
+            cfg.TRAIN.PRETRAINED_MODEL_PATH[0]
+        ):
             checkpoint = torch.load(cfg.TRAIN.PRETRAINED_MODEL_PATH[0])
             state_dict = (
                 checkpoint
@@ -83,17 +93,25 @@ def main():
             )
             model.load_state_dict(state_dict)
         else:
-            warnings.warn(f'Could not find file at path: {cfg.TRAIN.PRETRAINED_MODEL_PATH[0]}. Model has not been loaded.')
+            warnings.warn(
+                f"Could not find file at path: {cfg.TRAIN.PRETRAINED_MODEL_PATH[0]}. Model has not been loaded."
+            )
 
         port = find_free_port()
         world_size = cfg.SYSTEM.NUM_GPUS if cfg.TRAIN.DISTRIBUTED else 1
 
         if cfg.EXPERIMENTAL.IS_SPARSE:
-            mp.spawn(sparse_train, args=(port, world_size, model, cfg, args.log), nprocs=world_size, join=True)
-            logging.critical(f'joined all processes for config file: {f}')
+            mp.spawn(
+                sparse_train,
+                args=(port, world_size, model, cfg, args.log),
+                nprocs=world_size,
+                join=True,
+            )
+            logging.critical(f"joined all processes for config file: {f}")
 
         else:
             mp.spawn(train, args=(port, world_size, model, cfg, args.log), nprocs=world_size, join=True)
+
 
 
 if __name__ == "__main__":

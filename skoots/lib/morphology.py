@@ -4,9 +4,10 @@ from typing import Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from functools import cache
 
 
-@torch.jit.script
+@cache
 def _compute_zero_padding(kernel_size: List[int]) -> Tuple[int, int, int]:
     r"""Utility function that computes zero padding tuple.
     Adapted from Kornia
@@ -15,7 +16,7 @@ def _compute_zero_padding(kernel_size: List[int]) -> Tuple[int, int, int]:
     return computed[0], computed[1], computed[2]
 
 
-@torch.jit.script
+@cache
 def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
     r"""Creates a symmetric binary kernel to extract the patches. If the window size
     is HxWxD will create a (H*W)xHxW kernel.
@@ -36,7 +37,7 @@ def _get_binary_kernel3d(window_size: int, device: str) -> Tensor:
     return kernel[ind[:, 0], ...]
 
 
-@torch.jit.script
+@cache
 def _get_binary_kernel2d(window_size: int, device: str) -> Tensor:
     r"""Creates a symmetric binary kernel to extract the patches. If the window size
     is HxWxD will create a (H*W)xHxW kernel.
@@ -56,6 +57,7 @@ def _get_binary_kernel2d(window_size: int, device: str) -> Tensor:
 
 
 # re-implemented from torchvision.tensor.functional
+@cache
 def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
     ksize_half = (kernel_size - 1) * 0.5
 
@@ -67,6 +69,7 @@ def _get_gaussian_kernel1d(kernel_size: int, sigma: float) -> Tensor:
 
 
 # re-implemented from torchvision.tensor.functional
+@cache
 def _get_gaussian_kernel2d(
     kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
 ) -> Tensor:
@@ -81,6 +84,7 @@ def _get_gaussian_kernel2d(
 
 
 # expanded to 3D
+@cache
 def _get_gaussian_kernel3d(
     kernel_size: List[int], sigma: List[float], dtype: torch.dtype, device: torch.device
 ) -> Tensor:
